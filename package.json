@@ -1,6 +1,6 @@
 {
   "name": "@danicanod/banker",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "TypeScript library for connecting to Venezuelan bank accounts (Banesco & BNC). Hybrid Playwright/HTTP architecture for reliability and speed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,16 +17,20 @@
     "./bnc": {
       "types": "./dist/banks/bnc/index.d.ts",
       "import": "./dist/banks/bnc/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
     }
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build",
+    "prepare": "pnpm run build",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/ --ignore-pattern 'src/dev/**'",
     "lint:fix": "eslint src/ --ignore-pattern 'src/dev/**' --fix",
     "clean": "rm -rf dist/",
-    "rebuild": "npm run clean && npm run build",
+    "rebuild": "pnpm run clean && pnpm run build",
     "example:banesco": "tsx src/banks/banesco/examples/basic-usage.ts",
     "example:banesco-hybrid": "tsx src/banks/banesco/examples/hybrid-usage.ts",
     "example:bnc": "tsx src/banks/bnc/examples/http-usage.ts",
@@ -67,7 +71,7 @@
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "pnpm": ">=8.0.0"
   },
   "funding": {
     "type": "github",

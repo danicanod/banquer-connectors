@@ -135,16 +135,21 @@ export {
 } from './shared/performance-config.js';
 
 // ============================================================================
-// Unified Transaction Model Exports
+// Unified Transaction Model Exports (from core/)
 // ============================================================================
 
 export {
   makeTxnKey,
   normalizeTransaction,
   normalizeTransactions,
-  type Transaction,
-  type TxnKeyInput,
-  type BankCode,
-  type BankTransactionInput,
-  type NormalizeOptions,
-} from './transactions/index.js';
+} from './core/index.js';
+
+export type {
+  Transaction,
+  TxnKeyInput,
+  BankCode,
+  TransactionType,
+  BankTransactionInput,
+  NormalizeOptions,
+  Account,
+} from './core/index.js';
