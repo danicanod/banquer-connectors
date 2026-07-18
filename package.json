@@ -25,7 +25,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "pnpm run build",
+    "prepare": "tsc",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/ --ignore-pattern 'src/dev/**'",
     "lint:fix": "eslint src/ --ignore-pattern 'src/dev/**' --fix",
