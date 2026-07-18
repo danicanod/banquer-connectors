@@ -112,7 +112,6 @@ export type {
 } from './banks/bnc/types/index.js';
 
 export {
-  BncAccountType,
   BNC_URLS,
   BNC_SELECTORS,
   BNC_CONFIG,

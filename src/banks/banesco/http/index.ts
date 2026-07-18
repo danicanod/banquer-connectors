@@ -21,7 +21,6 @@ export {
   createBanescoHttpClient,
   type BanescoHttpCredentials,
   type BanescoHttpConfig,
-  type BanescoHttpLoginResult,
   type BanescoHttpTransaction,
   type BanescoHttpScrapingResult,
   type BanescoAccount,

@@ -6,6 +6,7 @@
  */
 
 import * as cheerio from 'cheerio';
+import { SECURITY_QUESTION_SLOTS } from '../types/index.js';
 
 export interface AspNetFormFields {
   __VIEWSTATE: string;
@@ -40,15 +41,20 @@ export interface ParsedPasswordPage {
   allHiddenFields: Record<string, string>;
 }
 
+/** Coerce cheerio's `.val()` (string | string[] | undefined) to a plain string. */
+function valToString(v: string | string[] | undefined | null): string {
+  return typeof v === 'string' ? v : '';
+}
+
 /**
  * Parse ASP.NET WebForms hidden fields from HTML
  */
 export function parseAspNetFormFields(html: string): AspNetFormFields {
   const $ = cheerio.load(html);
-  
-  const viewState = $('input[name="__VIEWSTATE"]').val() as string || '';
-  const viewStateGenerator = $('input[name="__VIEWSTATEGENERATOR"]').val() as string || '';
-  const eventValidation = $('input[name="__EVENTVALIDATION"]').val() as string || '';
+
+  const viewState = valToString($('input[name="__VIEWSTATE"]').val());
+  const viewStateGenerator = valToString($('input[name="__VIEWSTATEGENERATOR"]').val());
+  const eventValidation = valToString($('input[name="__EVENTVALIDATION"]').val());
   
   return {
     __VIEWSTATE: viewState,
@@ -66,9 +72,9 @@ export function parseAllHiddenFields(html: string): Record<string, string> {
   
   $('input[type="hidden"]').each((_, element) => {
     const name = $(element).attr('name');
-    const value = $(element).val() as string;
+    const value = valToString($(element).val());
     if (name) {
-      fields[name] = value || '';
+      fields[name] = value;
     }
   });
   
@@ -105,12 +111,7 @@ export function parseSecurityQuestionsPage(html: string): ParsedSecurityQuestion
   const formAction = $('form').attr('action') || '';
   
   // Parse security questions
-  const questionElements = [
-    { labelId: 'lblPrimeraP', inputId: 'txtPrimeraR' },
-    { labelId: 'lblSegundaP', inputId: 'txtSegundaR' },
-    { labelId: 'lblTerceraP', inputId: 'txtTerceraR' },
-    { labelId: 'lblCuartaP', inputId: 'txtCuartaR' }
-  ];
+  const questionElements = SECURITY_QUESTION_SLOTS;
   
   const questions: SecurityQuestion[] = [];
   
@@ -623,7 +624,9 @@ export function parseAccountsFromDashboard(html: string): ParsedAccount[] {
         const cells = $row.find('td');
         let accountType = 'Cuenta';
         let balance = 0;
-        const currency = 'VES';
+        // Detect currency from the row text (default VES). Previously this was
+        // hardcoded to 'VES', mislabelling foreign-currency accounts.
+        const currency = /USD|US\$|d[oó]lar/i.test($row.text()) ? 'USD' : 'VES';
         
         // First cell is usually account type
         if (cells.length > 0) {
@@ -696,7 +699,7 @@ export function parseAccountsFromDashboard(html: string): ParsedAccount[] {
     }
   }
   
-  // Method 3: Look in table cells for structured data
+  // Method 4: Look in table cells for structured data
   if (accounts.length === 0) {
     $('table').each((_, table) => {
       const $table = $(table);

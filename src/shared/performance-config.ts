@@ -31,7 +31,7 @@ export const PERFORMANCE_PRESETS = {
     blockNonEssentialJS: true,
     blockAds: true,
     blockAnalytics: true
-  } as PerformanceConfig,
+  } satisfies PerformanceConfig,
 
   /**
    * Aggressive performance - blocks most resources but keeps essential JS
@@ -45,7 +45,7 @@ export const PERFORMANCE_PRESETS = {
     blockNonEssentialJS: false, // Keep JS for dynamic content
     blockAds: true,
     blockAnalytics: true
-  } as PerformanceConfig,
+  } satisfies PerformanceConfig,
 
   /**
    * Balanced performance - blocks obvious non-essentials
@@ -59,7 +59,7 @@ export const PERFORMANCE_PRESETS = {
     blockNonEssentialJS: false,
     blockAds: true,
     blockAnalytics: true
-  } as PerformanceConfig,
+  } satisfies PerformanceConfig,
 
   /**
    * Conservative performance - only blocks obvious non-essentials
@@ -73,7 +73,7 @@ export const PERFORMANCE_PRESETS = {
     blockNonEssentialJS: false,
     blockAds: true,
     blockAnalytics: true
-  } as PerformanceConfig,
+  } satisfies PerformanceConfig,
 
   /**
    * No performance optimizations - for debugging only
@@ -86,7 +86,7 @@ export const PERFORMANCE_PRESETS = {
     blockNonEssentialJS: false,
     blockAds: false,
     blockAnalytics: false
-  } as PerformanceConfig
+  } satisfies PerformanceConfig
 };
 
 /**
@@ -238,32 +238,15 @@ export const ESSENTIAL_JS_PATTERNS = [
  * Get list of domains to block based on configuration
  */
 export function getBlockedDomains(config: PerformanceConfig): string[] {
-  if (!config.blockAds && !config.blockAnalytics) {
-    return [];
+  // BLOCKED_DOMAINS is a single curated list of ad / analytics / tracker hosts
+  // that is not sub-categorized. Block the whole list when either ad or analytics
+  // blocking is enabled, and nothing otherwise. (The previous per-domain substring
+  // filter silently let trackers like facebook.com / hotjar.com through whenever
+  // only one flag was set.)
+  if (config.blockAds || config.blockAnalytics) {
+    return [...BLOCKED_DOMAINS];
   }
-  
-  return BLOCKED_DOMAINS.filter(domain => {
-    // Block analytics domains
-    if (config.blockAnalytics && (
-      domain.includes('analytics') ||
-      domain.includes('tracking') ||
-      domain.includes('stats')
-    )) {
-      return true;
-    }
-    
-    // Block advertising domains
-    if (config.blockAds && (
-      domain.includes('ads') ||
-      domain.includes('doubleclick') ||
-      domain.includes('adsystem')
-    )) {
-      return true;
-    }
-    
-    // Block all domains if both ads and analytics blocking enabled
-    return config.blockAds && config.blockAnalytics;
-  });
+  return [];
 }
 
 /**
@@ -283,8 +266,6 @@ export function isEssentialJS(url: string, bankName: string): boolean {
     // Invalid URL, check patterns
   }
   
-  // Check essential patterns
-  return ESSENTIAL_JS_PATTERNS.some(pattern => 
-    urlLower.includes(pattern) || urlLower.includes(bankLower)
-  );
+  // Check essential patterns (same-origin bank JS is already allowed above).
+  return ESSENTIAL_JS_PATTERNS.some(pattern => urlLower.includes(pattern));
 } 

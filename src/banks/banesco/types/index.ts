@@ -56,11 +56,31 @@ export interface BanescoSecurityQuestion {
   fieldName: string;
 }
 
-// Banesco URLs and constants
+// Banesco URLs and constants.
+// Path casing is kept exactly as the working flow uses it: IIS paths are
+// case-insensitive, so LOGIN's lowercase and the mixed-case app paths both resolve.
 export const BANESCO_URLS = {
+  BASE: 'https://www.banesconline.com',
   LOGIN: 'https://www.banesconline.com/mantis/Website/Login.aspx',
+  DASHBOARD: 'https://www.banesconline.com/Mantis/WebSite/Default.aspx',
+  MOVEMENTS:
+    'https://www.banesconline.com/Mantis/WebSite/ConsultaMovimientosCuenta/MovimientosCuenta.aspx',
   IFRAME_SELECTOR: 'iframe#ctl00_cp_frmAplicacion'
 };
+
+/** ASP.NET label/input id pairs for Banesco's up-to-4 security-question slots. */
+export interface SecurityQuestionSlot {
+  labelId: string;
+  inputId: string;
+}
+
+/** The four fixed security-question slots (single source of truth for auth + parser). */
+export const SECURITY_QUESTION_SLOTS: SecurityQuestionSlot[] = [
+  { labelId: 'lblPrimeraP', inputId: 'txtPrimeraR' },
+  { labelId: 'lblSegundaP', inputId: 'txtSegundaR' },
+  { labelId: 'lblTerceraP', inputId: 'txtTerceraR' },
+  { labelId: 'lblCuartaP', inputId: 'txtCuartaR' },
+];
 
 // Banesco configuration
 export const BANESCO_CONFIG: BankConfig = {

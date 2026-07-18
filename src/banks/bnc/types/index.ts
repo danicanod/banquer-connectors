@@ -50,13 +50,6 @@ export interface BncTransaction extends BankTransaction {
   accountName?: string;    // Account name for multi-account support
 }
 
-// BNC Account types (based on the original code)
-export enum BncAccountType {
-  VES_1109 = 'BNC VES 1109',
-  USD_0816 = 'BNC USD 0816', 
-  USD_0801 = 'BNC USD 0801'
-}
-
 // BNC URLs and constants
 export const BNC_URLS = {
   BASE: 'https://personas.bncenlinea.com',
