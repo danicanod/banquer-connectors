@@ -29,20 +29,14 @@
 
 import * as cheerio from 'cheerio';
 import {
-  parseLoginPage,
-  parseSecurityQuestionsPage,
-  parsePasswordPage,
-  parseDashboardPage,
   parseTransactionsTable,
   parseCookies,
   serializeCookies,
-  buildHuella,
   parseAspNetFormFields,
   parseAllHiddenFields,
   findBestTransactionPostBack,
   buildPostBackFormData,
   parseAccountsFromDashboard,
-  type AspNetFormFields,
   type PostBackAction
 } from './form-parser.js';
 
@@ -67,15 +61,6 @@ export interface BanescoHttpConfig {
   cookies?: Map<string, string> | Record<string, string>;
   /** Skip login attempt and use provided cookies directly */
   skipLogin?: boolean;
-}
-
-export interface BanescoHttpLoginResult {
-  success: boolean;
-  message: string;
-  authenticated: boolean;
-  cookies?: Map<string, string>;
-  dashboardUrl?: string;
-  error?: string;
 }
 
 export interface BanescoHttpTransaction {
@@ -151,7 +136,6 @@ const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Appl
 // ============================================================================
 
 export class BanescoHttpClient {
-  private credentials: BanescoHttpCredentials;
   private config: {
     timeout: number;
     debug: boolean;
@@ -161,10 +145,8 @@ export class BanescoHttpClient {
   };
   private cookies: Map<string, string> = new Map();
   private isAuthenticated: boolean = false;
-  private securityQuestionsMap: Map<string, string>;
 
   constructor(credentials: BanescoHttpCredentials, config: BanescoHttpConfig = {}) {
-    this.credentials = credentials;
     this.config = {
       timeout: config.timeout ?? 30000,
       debug: config.debug ?? false,
@@ -172,9 +154,7 @@ export class BanescoHttpClient {
       cookies: config.cookies ?? undefined,
       skipLogin: config.skipLogin ?? false
     };
-    
-    this.securityQuestionsMap = this.parseSecurityQuestions(credentials.securityQuestions);
-    
+
     // Import pre-set cookies if provided
     if (config.cookies) {
       if (config.cookies instanceof Map) {
@@ -189,92 +169,11 @@ export class BanescoHttpClient {
     }
     
     this.log(`   Username: ${credentials.username.substring(0, 3)}***`);
-    this.log(`   Security questions: ${this.securityQuestionsMap.size} configured`);
   }
 
   // ==========================================================================
   // Public API
   // ==========================================================================
-
-  /**
-   * Perform complete login flow
-   * 
-   * NOTE: Pure HTTP login does NOT work for Banesco. The site requires
-   * JavaScript and browser context. Use the Playwright-based BanescoAuth
-   * for login, then import cookies to this client for data fetching.
-   */
-  async login(): Promise<BanescoHttpLoginResult> {
-    // If already authenticated via imported cookies, skip login
-    if (this.isAuthenticated && this.cookies.size > 0) {
-      this.log('Already authenticated via imported cookies');
-      return {
-        success: true,
-        message: 'Already authenticated via imported cookies',
-        authenticated: true,
-        cookies: new Map(this.cookies)
-      };
-    }
-    
-    this.log('🚀 Starting Banesco HTTP login...');
-    this.log(' WARNING: Pure HTTP login may fail. Banesco requires JavaScript.');
-    const startTime = Date.now();
-
-    try {
-      // Step 1: Load login page and get initial cookies + form fields
-      this.log('Step 1: Loading login page...');
-      const loginPageData = await this.loadLoginPage();
-      
-      // Step 2: Submit username
-      this.log('Step 2: Submitting username...');
-      const usernameResult = await this.submitUsername(loginPageData.formFields, loginPageData.allHiddenFields);
-      
-      // Step 3: Handle security questions (if redirected there)
-      this.log('Step 3: Handling security questions...');
-      const securityResult = await this.submitSecurityQuestions(usernameResult.nextUrl);
-      
-      // Step 4: Submit password
-      this.log('Step 4: Submitting password...');
-      const passwordResult = await this.submitPassword(securityResult.nextUrl);
-      
-      // Step 5: Verify authentication
-      this.log('Step 5: Verifying authentication...');
-      const verified = await this.verifyAuthentication(passwordResult.nextUrl);
-      
-      const elapsed = Date.now() - startTime;
-      
-      if (verified.isAuthenticated) {
-        this.isAuthenticated = true;
-        this.log(`Login successful in ${elapsed}ms`);
-        
-        return {
-          success: true,
-          message: `Authentication successful in ${elapsed}ms`,
-          authenticated: true,
-          cookies: new Map(this.cookies),
-          dashboardUrl: verified.finalUrl
-        };
-      } else {
-        return {
-          success: false,
-          message: 'Authentication failed - could not verify login',
-          authenticated: false,
-          error: 'Verification failed'
-        };
-      }
-
-    } catch (error: unknown) {
-      const elapsed = Date.now() - startTime;
-      const message = error instanceof Error ? error.message : String(error);
-      this.log(`Login failed after ${elapsed}ms: ${message}`);
-      
-      return {
-        success: false,
-        message,
-        authenticated: false,
-        error: message
-      };
-    }
-  }
 
   /**
    * Get transactions (must be logged in first)
@@ -410,7 +309,7 @@ export class BanescoHttpClient {
         const location = response.headers.get('location');
         if (location) {
           const redirectUrl = new URL(location, BANESCO_URLS.BASE).toString();
-          this.log(`   ↪️ Following redirect to: ${redirectUrl.split('/').pop()}`);
+          this.log(`   Following redirect to: ${redirectUrl.split('/').pop()}`);
           return await this.fetchPage(redirectUrl);
         }
       }
@@ -465,13 +364,6 @@ export class BanescoHttpClient {
     this.log(`Imported ${importedCount} cookies from Playwright (${playwrightCookies.length} provided)`);
   }
 
-  /**
-   * Set authenticated state (use after importing cookies from external source)
-   */
-  setAuthenticated(authenticated: boolean): void {
-    this.isAuthenticated = authenticated;
-  }
-
   // ==========================================================================
   // Account & Movements API
   // ==========================================================================
@@ -490,7 +382,7 @@ export class BanescoHttpClient {
     }
 
     try {
-      this.log('📋 Fetching accounts...');
+      this.log('Fetching accounts...');
 
       // Prefer the dedicated accounts page (more stable than Default.aspx in newer layouts)
       let html = await this.fetchPage(BANESCO_URLS.CONSULTAS_CUENTAS);
@@ -505,7 +397,7 @@ export class BanescoHttpClient {
       if (this.config.debug) {
         const fs = await import('fs');
         fs.writeFileSync('debug-banesco-accounts.html', html);
-        this.log(`   📄 Saved accounts HTML to debug-banesco-accounts.html (${html.length} chars)`);
+        this.log(`   Saved accounts HTML to debug-banesco-accounts.html (${html.length} chars)`);
       }
 
       const parsedAccounts = parseAccountsFromDashboard(html);
@@ -654,12 +546,18 @@ export class BanescoHttpClient {
         };
       }
       
-      this.log(`   No transactions parsed from result`);
+      // The page loaded and the form submitted, but we parsed zero rows AND saw no
+      // explicit "no movements" marker (that confident-empty case returns success
+      // above). For a financial connector this is ambiguous — likely a parse miss —
+      // so report it as a failure rather than a misleading empty success. Callers
+      // must not treat this as "no transactions".
+      this.log(`   No transactions parsed and no "no movements" marker found`);
       return {
-        success: true,
-        message: 'Transactions page loaded but no data found',
+        success: false,
+        message: 'Movements page loaded but no transactions could be parsed (and no "no movements" marker was present)',
         accountNumber,
-        transactions: []
+        transactions: [],
+        error: 'no_transactions_parsed'
       };
 
     } catch (error: unknown) {
@@ -712,7 +610,7 @@ export class BanescoHttpClient {
         return null;
       }
       
-      this.log(`   📄 Fetching next page (clicking ${btnName})...`);
+      this.log(`   Fetching next page (clicking ${btnName})...`);
       
       // Build form data for pagination postback
       const formFields = parseAspNetFormFields(currentPageHtml);
@@ -734,7 +632,7 @@ export class BanescoHttpClient {
         const location = response.headers.get('location');
         if (location) {
           const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
-          this.log(`   ↪️ Following redirect to: ${absoluteUrl.split('/').pop()}`);
+          this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
           return await this.fetchPage(absoluteUrl);
         }
       }
@@ -903,7 +801,7 @@ export class BanescoHttpClient {
         // "Click" consult
         if (consultField) formData[consultField] = consultValue;
 
-        this.log(`   📤 Posting movements form (rdbRango: ${formatDate(thirtyDaysAgo)} - ${formatDate(today)})`);
+        this.log(`   Posting movements form (rdbRango: ${formatDate(thirtyDaysAgo)} - ${formatDate(today)})`);
         const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
 
         // Handle redirect if needed
@@ -911,7 +809,7 @@ export class BanescoHttpClient {
           const location = response.headers.get('location');
           if (location) {
             const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
-            this.log(`   ↪️ Following redirect to: ${absoluteUrl.split('/').pop()}`);
+            this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
             return await this.fetchPage(absoluteUrl);
           }
         }
@@ -936,7 +834,7 @@ export class BanescoHttpClient {
         // "Click" consult
         if (consultField) attemptForm[consultField] = consultValue;
 
-        this.log(`   📤 Posting movements form (period=${period.value || 'n/a'})`);
+        this.log(`   Posting movements form (period=${period.value || 'n/a'})`);
         const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, attemptForm);
       
         // Handle redirect if needed
@@ -944,7 +842,7 @@ export class BanescoHttpClient {
           const location = response.headers.get('location');
           if (location) {
             const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
-            this.log(`   ↪️ Following redirect to: ${absoluteUrl.split('/').pop()}`);
+            this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
             const redirectedHtml = await this.fetchPage(absoluteUrl);
             const txs = this.parseMovementsFromHtml(redirectedHtml, desiredAccountNumber);
             if (txs.length > 0) return redirectedHtml;
@@ -1160,279 +1058,6 @@ export class BanescoHttpClient {
   }
 
   // ==========================================================================
-  // Internal: Login Flow Steps
-  // ==========================================================================
-
-  private async loadLoginPage(): Promise<{
-    formFields: AspNetFormFields;
-    allHiddenFields: Record<string, string>;
-  }> {
-    // Step 1: Hit the main login page to get session cookie
-    const mainPageHtml = await this.fetchPage(BANESCO_URLS.LOGIN_PAGE);
-    this.log(`   Got main login page (${mainPageHtml.length} chars)`);
-    
-    // Step 2: Load the iframe content (inicio.aspx -> redirects to LoginDNA.aspx)
-    // Use Referer from the main page to simulate browser iframe load
-    const inicioResponse = await this.makeRequest(BANESCO_URLS.LOGIN_IFRAME_INICIO, { 
-      redirect: 'follow',
-      headers: {
-        'Referer': BANESCO_URLS.LOGIN_PAGE,
-        'Sec-Fetch-Dest': 'iframe',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin'
-      }
-    });
-    let iframeHtml = await inicioResponse.text();
-    this.log(`   Got iframe content (${iframeHtml.length} chars)`);
-    
-    // Check for the actual form content (various field name patterns)
-    const hasUsernameField = iframeHtml.includes('txtloginname') || 
-                             iframeHtml.includes('txtUsuario') ||
-                             iframeHtml.includes('ddpControles');
-    
-    if (!hasUsernameField) {
-      // Try direct LoginDNA URL if inicio didn't work
-      this.log(`    Form not found in inicio response, trying direct URL...`);
-      
-      const directResponse = await this.makeRequest(BANESCO_URLS.LOGIN_IFRAME_FORM, {
-        redirect: 'follow',
-        headers: {
-          'Referer': BANESCO_URLS.LOGIN_PAGE,
-          'Sec-Fetch-Dest': 'iframe',
-          'Sec-Fetch-Mode': 'navigate', 
-          'Sec-Fetch-Site': 'same-origin'
-        }
-      });
-      iframeHtml = await directResponse.text();
-      this.log(`   Got direct LoginDNA content (${iframeHtml.length} chars)`);
-    }
-    
-    // Final check for form content
-    const hasForm = iframeHtml.includes('txtloginname') || 
-                    iframeHtml.includes('txtUsuario') ||
-                    iframeHtml.includes('ddpControles');
-    
-    if (!hasForm) {
-      // Save HTML for debugging
-      const fs = await import('fs');
-      fs.writeFileSync('debug-banesco-login.html', iframeHtml);
-      this.log(`    Saved HTML to debug-banesco-login.html`);
-      this.log(`    HTML preview: ${iframeHtml.substring(0, 500)}...`);
-      
-      throw new Error('Login form not found. The Banesco site may require JavaScript or a browser context.');
-    }
-    
-    this.log(`   Found login form in HTML`);
-    
-    const parsed = parseLoginPage(iframeHtml);
-    
-    // Try to find VIEWSTATE with regex if cheerio missed it
-    if (parsed.formFields.__VIEWSTATE.length < 500) {
-      const viewStateMatch = iframeHtml.match(/name="__VIEWSTATE"[^>]*value="([^"]+)"/);
-      if (viewStateMatch && viewStateMatch[1].length > parsed.formFields.__VIEWSTATE.length) {
-        parsed.formFields.__VIEWSTATE = viewStateMatch[1];
-        this.log(`   Found longer VIEWSTATE via regex (${parsed.formFields.__VIEWSTATE.length} chars)`);
-      }
-    }
-    
-    this.log(`   Got VIEWSTATE (${parsed.formFields.__VIEWSTATE.length} chars)`);
-    this.log(`   Hidden fields: ${Object.keys(parsed.allHiddenFields).length}`);
-    
-    return {
-      formFields: parsed.formFields,
-      allHiddenFields: parsed.allHiddenFields
-    };
-  }
-
-  private async submitUsername(
-    formFields: AspNetFormFields,
-    allHiddenFields: Record<string, string>
-  ): Promise<{ nextUrl: string }> {
-    const formData: Record<string, string> = {
-      ...formFields,
-      huella: buildHuella(),
-      txtBatUsuario: '',
-      modal: '',
-      urlRed: '',
-      ValidarVacio: '^$',
-      Hidden1: '',
-      ClaveFormato: allHiddenFields['ClaveFormato'] || '^[a-zA-ZñÑ0-9!#\\$\\%\\?¡¿\\*_\\.-]{8,15}$',
-      UsuarioFormato: allHiddenFields['UsuarioFormato'] || '^[a-zA-Z0-9_.]{4,10}$',
-      RangoUsuario: allHiddenFields['RangoUsuario'] || '6|10',
-      RangoClave: allHiddenFields['RangoClave'] || '8|15',
-      ErrorUsuario: 'Por favor indique su Usuario.',
-      ErrorUsuarioInvalido: 'Usuario inválido. Por favor verifique e intente de nuevo.',
-      ErrorClaveAcceso: 'Por favor ingrese la clave que posee para acceder a los servicios de Internet de BanescOnline',
-      ErrorClaveAccesoInvalida: 'La Clave introducida no es válida.',
-      ErrorDobleClick: 'Su operación está en proceso. Por favor, espere el resultado sin presionar nuevamente el botón Aceptar',
-      lblURL: BANESCO_URLS.LOGIN_PAGE,
-      lnkSitioSeguro2: "window.open('../Ayudas/sitio_seguro_banesconline.htm','ayuda','width=320,height=220,scrollbars=yes')",
-      lnkSitioSeguro: "window.open('../Ayudas/sitio_seguro_banesconline.htm','ayuda','width=320,height=220,scrollbars=yes')",
-      lnkCandado: "javascript:selloIrA('mantis');",
-      // Try both field name patterns (ASP.NET uses different naming conventions)
-      txtUsuario: this.credentials.username,
-      'ctl00$cp$ddpControles$txtloginname': this.credentials.username,
-      bAceptar: 'Aceptar',
-      'ctl00$cp$ddpControles$btnAcceder': 'Aceptar'
-    };
-
-    const response = await this.postForm(BANESCO_URLS.LOGIN_IFRAME_FORM, formData);
-    
-    // Should redirect to AU_ValDNA.aspx (security questions)
-    const location = response.headers.get('location');
-    
-    if (response.status === 302 && location) {
-      const nextUrl = new URL(location, BANESCO_URLS.BASE).toString();
-      this.log(`   Username submitted, redirecting to: ${nextUrl.split('/').pop()}`);
-      return { nextUrl };
-    }
-    
-    // If not a redirect, check the response body for errors or next steps
-    const html = await response.text();
-    
-    // Check if we got an error page
-    if (html.includes('error') || html.includes('Error')) {
-      this.log(`    Response may contain an error`);
-    }
-    
-    // Try to find the form action for next step
-    const formActionMatch = html.match(/action="([^"]+)"/);
-    if (formActionMatch) {
-      const nextUrl = new URL(formActionMatch[1], BANESCO_URLS.BASE).toString();
-      this.log(`   Username submitted, next form at: ${nextUrl.split('/').pop()}`);
-      return { nextUrl };
-    }
-    
-    // Default to security questions URL
-    this.log(`    No redirect found, defaulting to security questions`);
-    return { nextUrl: BANESCO_URLS.SECURITY_QUESTIONS };
-  }
-
-  private async submitSecurityQuestions(pageUrl: string): Promise<{ nextUrl: string }> {
-    // Load security questions page
-    const html = await this.fetchPage(pageUrl);
-    const parsed = parseSecurityQuestionsPage(html);
-    
-    this.log(`   Found ${parsed.questions.length} security questions`);
-    
-    // Match and answer questions
-    const answers: Record<string, string> = {};
-    
-    for (const question of parsed.questions) {
-      const answer = this.findSecurityAnswer(question.questionText);
-      if (answer) {
-        // Map input IDs to form field names
-        const fieldName = this.getSecurityFieldName(question.inputId);
-        answers[fieldName] = answer;
-        this.log(`   Matched: "${question.questionText.substring(0, 30)}..." → answer provided`);
-      }
-    }
-    
-    // Build form data
-    const formData: Record<string, string> = {
-      ...parsed.formFields,
-      huella: buildHuella(),
-      txtEjecutar: '',
-      PreguntaRespuestaFormato: '^[a-zA-Z0-9 _\\-/¿?¡!,.ñÑáÁéÉÍíóÓúÚ]{1,100}$',
-      ValidarVacio: '^$',
-      ErrorRespuestas: 'Por favor responda las preguntas de seguridad.',
-      ErrorPreguntasDistintas: 'La pregunta seleccionada debe ser diferente a las demás.',
-      ErrorPreguntasRespuestasIgualdad: 'Las preguntas y respuestas de seguridad deben ser diferentes.',
-      IdePregunta: parsed.allHiddenFields['IdePregunta'] || '',
-      ErrorRespuestasIgualdad: 'Las respuestas de seguridad deben ser diferentes.',
-      txtBatUsuario: '',
-      MaxPreguntaRespuesta: '65',
-      ErrorDobleClick: 'Su operación está en proceso. Por favor, espere el resultado sin presionar nuevamente el botón Aceptar',
-      IdePregunta2: parsed.allHiddenFields['IdePregunta2'] || '',
-      IdePregunta3: parsed.allHiddenFields['IdePregunta3'] || '',
-      IdePregunta4: parsed.allHiddenFields['IdePregunta4'] || '',
-      ContadorPreguntas: String(parsed.questionCount || parsed.questions.length),
-      ...answers,
-      bAceptar: 'Aceptar'
-    };
-
-    const response = await this.postForm(pageUrl, formData);
-    
-    // Should redirect to ContrasenaDNA.aspx (password page)
-    const location = response.headers.get('location');
-    const nextUrl = location 
-      ? new URL(location, BANESCO_URLS.BASE).toString()
-      : BANESCO_URLS.PASSWORD;
-    
-    this.log(`   Security questions answered, redirecting to: ${nextUrl.split('/').pop()}`);
-    
-    return { nextUrl };
-  }
-
-  private async submitPassword(pageUrl: string): Promise<{ nextUrl: string }> {
-    // Load password page
-    const html = await this.fetchPage(pageUrl);
-    const parsed = parsePasswordPage(html);
-    
-    // Build form data (similar structure to username page)
-    const formData: Record<string, string> = {
-      ...parsed.formFields,
-      huella: buildHuella(),
-      txtBatUsuario: '',
-      ValidarVacio: '^$',
-      Hidden1: '',
-      ClaveFormato: parsed.allHiddenFields['ClaveFormato'] || '^[a-zA-ZñÑ0-9!#\\$\\%\\?¡¿\\*_\\.-]{8,15}$',
-      UsuarioFormato: parsed.allHiddenFields['UsuarioFormato'] || '^[a-zA-Z0-9_.]{4,10}$',
-      RangoUsuario: parsed.allHiddenFields['RangoUsuario'] || '6|10',
-      RangoClave: parsed.allHiddenFields['RangoClave'] || '8|15',
-      ErrorUsuario: 'Por favor indique su Usuario.',
-      ErrorUsuarioInvalido: 'Usuario inválido. Por favor verifique e intente de nuevo.',
-      ErrorClaveAcceso: 'Por favor ingrese la clave que posee para acceder a los servicios de Internet de BanescOnline',
-      ErrorClaveAccesoInvalida: 'La Clave introducida no es válida.',
-      ErrorDobleClick: 'Su operación está en proceso. Por favor, espere el resultado sin presionar nuevamente el botón Aceptar',
-      lblURL: parsed.allHiddenFields['lblURL'] || BANESCO_URLS.LOGIN_IFRAME_FORM,
-      lnkSitioSeguro2: "window.open('../Ayudas/sitio_seguro_banesconline.htm','ayuda','width=320,height=220,scrollbars=yes')",
-      lnkSitioSeguro: "window.open('../Ayudas/sitio_seguro_banesconline.htm','ayuda','width=320,height=220,scrollbars=yes')",
-      lnkCandado: "javascript:selloIrA('mantis');",
-      txtClave: this.credentials.password,
-      CBMachine: 'on',
-      bAceptar: 'Aceptar'
-    };
-
-    const response = await this.postForm(pageUrl, formData);
-    
-    // After password, we get HTML with JS redirect or need to follow Location
-    const location = response.headers.get('location');
-    
-    // The response might be HTML with a redirect, or a 302
-    if (location) {
-      const nextUrl = new URL(location, BANESCO_URLS.BASE).toString();
-      this.log(`   Password submitted, redirecting to: ${nextUrl.split('/').pop()}`);
-      return { nextUrl };
-    }
-    
-    // If no redirect header, the page may contain a meta refresh or JS redirect
-    // In practice, we should end up at Default.aspx after following redirects
-    this.log(`   Password submitted, navigating to dashboard...`);
-    return { nextUrl: BANESCO_URLS.DASHBOARD };
-  }
-
-  private async verifyAuthentication(dashboardUrl: string): Promise<{
-    isAuthenticated: boolean;
-    finalUrl: string;
-  }> {
-    // Fetch the dashboard page
-    const html = await this.fetchPage(dashboardUrl);
-    const parsed = parseDashboardPage(html);
-    
-    if (parsed.isAuthenticated) {
-      this.log(`   Authentication verified (found ${parsed.menuLinks.length} menu links)`);
-    } else {
-      this.log(`   Authentication not verified`);
-    }
-    
-    return {
-      isAuthenticated: parsed.isAuthenticated,
-      finalUrl: dashboardUrl
-    };
-  }
-
-  // ==========================================================================
   // Internal: HTTP Helpers
   // ==========================================================================
 
@@ -1540,56 +1165,6 @@ export class BanescoHttpClient {
       }
       throw error;
     }
-  }
-
-  // ==========================================================================
-  // Internal: Security Questions
-  // ==========================================================================
-
-  private parseSecurityQuestions(config: string): Map<string, string> {
-    const map = new Map<string, string>();
-    
-    if (!config) return map;
-    
-    const pairs = config.split(',');
-    for (const pair of pairs) {
-      const [keyword, answer] = pair.split(':');
-      if (keyword && answer) {
-        const normalizedKeyword = keyword.trim().toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, ''); // Remove accents
-        map.set(normalizedKeyword, answer.trim());
-      }
-    }
-    
-    return map;
-  }
-
-  private findSecurityAnswer(questionText: string): string | null {
-    const normalizedQuestion = questionText.toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[¿?¡!]/g, '');
-
-    for (const [keyword, answer] of this.securityQuestionsMap.entries()) {
-      if (normalizedQuestion.includes(keyword)) {
-        return answer;
-      }
-    }
-    
-    return null;
-  }
-
-  private getSecurityFieldName(inputId: string): string {
-    // Map simple IDs to ASP.NET form field names
-    const mapping: Record<string, string> = {
-      'txtPrimeraR': 'txtPrimeraR',
-      'txtSegundaR': 'txtSegundaR',
-      'txtTerceraR': 'txtTerceraR',
-      'txtCuartaR': 'txtCuartaR'
-    };
-    
-    return mapping[inputId] || inputId;
   }
 
   // ==========================================================================
@@ -1720,15 +1295,4 @@ export function createBanescoHttpClient(
   config?: BanescoHttpConfig
 ): BanescoHttpClient {
   return new BanescoHttpClient(credentials, config);
-}
-
-/**
- * Quick login function for simple use cases
- */
-export async function quickHttpLogin(
-  credentials: BanescoHttpCredentials,
-  config?: BanescoHttpConfig
-): Promise<BanescoHttpLoginResult> {
-  const client = createBanescoHttpClient(credentials, config);
-  return client.login();
 }

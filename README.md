@@ -35,7 +35,12 @@ npm install @danicanod/banquer-connectors
 - Node.js >= 18
 - npm >= 8
 
-Playwright Chromium is installed automatically via postinstall (required for Banesco login).
+**Banesco** and **Facebank** drive a real browser, so they need Playwright's Chromium.
+It is **not** installed automatically (BNC is pure HTTP and needs no browser). Install it once:
+
+```bash
+npx playwright install chromium   # or: npm run install:browser
+```
 
 ## Quick Start
 

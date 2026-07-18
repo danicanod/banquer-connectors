@@ -15,7 +15,7 @@
  * ## Limitations
  * 
  * - **Last 25 transactions only** - BNC API does not expose full history
- * - **3 accounts**: VES_1109, USD_0816, USD_0801
+ * - **Accounts are discovered dynamically** at login (BNC exposes a fixed set per user)
  * - Session can expire; use `logoutFirst: true` to avoid "session already active" errors
  * 
  * ## Transaction IDs

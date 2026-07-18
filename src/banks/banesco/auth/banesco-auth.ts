@@ -25,6 +25,14 @@ export interface BanescoErrorDetails {
   isTransientOutage: boolean;
 }
 
+/** The distinct screens the Banesco login flow can be on (see `LOGIN_STEP`). */
+type LoginStep =
+  | 'unknown'
+  | 'active_session_warning'
+  | 'security_questions'
+  | 'password'
+  | 'login_form';
+
 export class BanescoAuth extends BaseBankAuth<
   BanescoCredentials, 
   BanescoAuthConfig, 
@@ -35,11 +43,15 @@ export class BanescoAuth extends BaseBankAuth<
   /** Stores the last detected Banesco error details (if any) */
   private lastBanescoError: BanescoErrorDetails | null = null;
 
+  /** The specific reason performLogin failed, surfaced to the caller instead of a generic failure. */
+  private lastLoginError: Error | null = null;
+
   constructor(credentials: BanescoCredentials, config: BanescoAuthConfig = {}) {
     super('Banesco', credentials, config);
     
     this.securityHandler = new SecurityQuestionsHandler(
-      credentials.securityQuestions
+      credentials.securityQuestions,
+      this.config.debug
     );
   }
 
@@ -87,7 +99,7 @@ export class BanescoAuth extends BaseBankAuth<
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         if (attempt > 1) {
-          this.log(`🔄 Retry attempt ${attempt}/${maxAttempts} after transient error...`);
+          this.log(`Retry attempt ${attempt}/${maxAttempts} after transient error...`);
         }
         
         // Call the parent login method
@@ -108,7 +120,7 @@ export class BanescoAuth extends BaseBankAuth<
           ));
         
         if (isTransient && attempt < maxAttempts) {
-          this.log(`⏳ Transient Banesco outage detected. Waiting ${retryDelay}ms before retry...`);
+          this.log(`Transient Banesco outage detected. Waiting ${retryDelay}ms before retry...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
           
           // Close and reinitialize browser for fresh attempt
@@ -187,7 +199,13 @@ export class BanescoAuth extends BaseBankAuth<
           : 'Banesco error';
         throw new Error(`${prefix}${errorInfo ? ` (${errorInfo})` : ''}: ${banescoError.message}`);
       }
-      
+
+      // No Banesco error page, but performLogin failed for a specific reason
+      // (e.g. incomplete security questions) — surface it rather than a generic failure.
+      if (this.lastLoginError) {
+        throw this.lastLoginError;
+      }
+
       return false;
 
     } catch (error) {
@@ -271,7 +289,7 @@ export class BanescoAuth extends BaseBankAuth<
     LOGIN_FORM: 'login_form',
   } as const;
 
-  private async detectCurrentStep(frame: Frame): Promise<string> {
+  private async detectCurrentStep(frame: Frame): Promise<LoginStep> {
     // FIRST: Check URL for AU_ValDNA.aspx - this is definitively the security questions page
     // This check takes priority because AU_ValDNA can sometimes have password-like fields
     // that cause false positives when checking password selectors first
@@ -374,16 +392,17 @@ export class BanescoAuth extends BaseBankAuth<
    */
   private async performLogin(frame: Frame): Promise<boolean> {
     this.log('Starting login process...');
+    this.lastLoginError = null;
 
     try {
       // Step 1: Enter username and submit
-      this.log('👤 Step 1: Entering username...');
+      this.log('Step 1: Entering username...');
       await this.enterUsernameAndSubmit(frame);
       
       await this.debugPause('Username submitted - waiting for next step');
 
       // Step 2: Wait for next step and get fresh frame reference
-      this.log('⏳ Waiting for next step to load...');
+      this.log('Waiting for next step to load...');
       await this.page?.waitForTimeout(3000);
 
       // Loop to handle intermediate screens (active session warning, security questions)
@@ -400,14 +419,14 @@ export class BanescoAuth extends BaseBankAuth<
 
         if (step === BanescoAuth.LOGIN_STEP.PASSWORD) {
           // Found password field - proceed to enter password
-          this.log('🔑 Step 3: Entering password...');
+          this.log('Step 3: Entering password...');
           await this.enterPasswordDirect(currentFrame);
           this.log('Login form submitted successfully');
           return true;
         }
 
         if (step === BanescoAuth.LOGIN_STEP.SECURITY_QUESTIONS) {
-          this.log('❓ Step 2: Handling security questions...');
+          this.log('Step 2: Handling security questions...');
           const result: SecurityQuestionsResult = await this.securityHandler.handleSecurityQuestions(currentFrame);
           
           this.log(`Security questions: ${result.answersProvided}/${result.questionsFound} answered`);
@@ -450,7 +469,7 @@ export class BanescoAuth extends BaseBankAuth<
         }
 
         if (step === BanescoAuth.LOGIN_STEP.LOGIN_FORM) {
-          this.log('👤 Back at login form, re-entering username...');
+          this.log('Back at login form, re-entering username...');
           await this.enterUsernameAndSubmit(currentFrame);
           await this.page?.waitForTimeout(3000);
           currentFrame = await this.getRefreshedFrame();
@@ -458,7 +477,7 @@ export class BanescoAuth extends BaseBankAuth<
         }
 
         // UNKNOWN step - wait a bit and try again
-        this.log('⏳ Unknown step, waiting for page to settle...');
+        this.log('Unknown step, waiting for page to settle...');
         await this.page?.waitForTimeout(2000);
         currentFrame = await this.getRefreshedFrame();
       }
@@ -466,7 +485,10 @@ export class BanescoAuth extends BaseBankAuth<
       throw new Error('Max retries exceeded - could not reach password step');
 
     } catch (error) {
-      this.log(`Login process failed: ${error}`);
+      // Preserve the specific reason (e.g. "Security questions incomplete: ...") so
+      // performBankSpecificLogin can surface it instead of a generic failure.
+      this.lastLoginError = error instanceof Error ? error : new Error(String(error));
+      this.log(`Login process failed: ${this.lastLoginError.message}`);
       return false;
     }
   }
@@ -511,7 +533,7 @@ export class BanescoAuth extends BaseBankAuth<
     
     // Try pressing Enter instead of clicking button (more natural behavior)
     // This allows any JavaScript handlers on the form to process normally
-    this.log('🔘 Pressing Enter to submit...');
+    this.log('Pressing Enter to submit...');
     await passwordField.press('Enter');
     this.log('Submit triggered via Enter');
   }
@@ -606,7 +628,7 @@ export class BanescoAuth extends BaseBankAuth<
       try {
         const element = await frame.$(selector);
         if (element && await element.isVisible()) {
-          this.log(`🔘 Clicking submit: ${selector}`);
+          this.log(`Clicking submit: ${selector}`);
           await element.click();
           this.log('Submit clicked');
           return;
@@ -704,7 +726,7 @@ export class BanescoAuth extends BaseBankAuth<
    * Check if the page shows authenticated chrome (logout link, etc.)
    * This helps detect successful login even if URL remains on login.aspx
    */
-  private async checkForAuthenticatedChrome(): Promise<boolean> {
+  private async checkForAuthenticatedUi(): Promise<boolean> {
     if (!this.page) return false;
 
     try {
@@ -775,7 +797,7 @@ export class BanescoAuth extends BaseBankAuth<
         }
 
         // Check for authenticated chrome (logout link) early
-        if (await this.checkForAuthenticatedChrome()) {
+        if (await this.checkForAuthenticatedUi()) {
           this.log(`Current URL: ${this.page.url()}`);
           return true;
         }
@@ -812,7 +834,7 @@ export class BanescoAuth extends BaseBankAuth<
         this.log('Still on login page, trying explicit navigation to dashboard...');
         
         try {
-          await this.page.goto('https://www.banesconline.com/Mantis/WebSite/Default.aspx', {
+          await this.page.goto(BANESCO_URLS.DASHBOARD, {
             waitUntil: 'domcontentloaded',
             timeout: 10000
           });

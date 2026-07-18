@@ -45,6 +45,7 @@
  */
 
 import { BanescoAuth } from './auth/banesco-auth.js';
+import { BANESCO_URLS } from './types/index.js';
 import {
   BanescoHttpClient,
   type BanescoHttpCredentials,
@@ -149,7 +150,7 @@ export class BanescoClient {
       // This ensures all cookies are set before we switch to HTTP client
       this.log('Navigating to movements page in Playwright...');
       try {
-        await page.goto('https://www.banesconline.com/Mantis/WebSite/ConsultaMovimientosCuenta/MovimientosCuenta.aspx', {
+        await page.goto(BANESCO_URLS.MOVEMENTS, {
           waitUntil: 'domcontentloaded',
           timeout: 15000
         });
