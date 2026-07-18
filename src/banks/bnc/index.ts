@@ -50,7 +50,6 @@ export type {
 } from './types/index.js';
 
 export {
-  BncAccountType,
   BNC_URLS,
   BNC_SELECTORS,
   BNC_CONFIG,

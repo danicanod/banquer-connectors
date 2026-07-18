@@ -15,15 +15,13 @@
  */
 
 import * as cheerio from 'cheerio';
-import { createHash } from 'crypto';
-import { 
+import { BncTransactionParser } from './transaction-parser.js';
+import {
   CookieFetch, 
   createCookieFetch,
   extractRequestVerificationToken
 } from '../../../shared/utils/http-client.js';
 import type { BncCredentials, BncTransaction, BncScrapingResult } from '../types/index.js';
-// BncAccountType imported for potential future use
-import type { BncAccountType as _BncAccountType } from '../types/index.js';
 
 // ============================================================================
 // Types
@@ -90,6 +88,19 @@ const BNC_HTTP_URLS = {
   TRANSACTIONS_LIST: 'https://personas.bncenlinea.com/Accounts/Transactions/Last25_List'
 };
 
+/**
+ * BNC JSON `Type` response codes (observed from the AJAX endpoints):
+ * 200 = success, 300/350/500 = empty result, 505 = session expired.
+ */
+const BNC_RESPONSE = {
+  SUCCESS: 200,
+  EMPTY: [300, 350, 500],
+  SESSION_EXPIRED: 505
+};
+
+/** A post-login page shorter than this many chars is treated as not-yet-authenticated. */
+const MIN_AUTHENTICATED_PAGE_LENGTH = 5000;
+
 // ============================================================================
 // BNC HTTP Client
 // ============================================================================
@@ -100,6 +111,7 @@ export class BncHttpClient {
   private httpClient: CookieFetch;
   private isAuthenticated: boolean = false;
   private currentToken: string | null = null;
+  private readonly parser = new BncTransactionParser((m) => this.log(m));
 
   constructor(credentials: BncCredentials, config: BncHttpConfig = {}) {
     this.credentials = credentials;
@@ -129,7 +141,7 @@ export class BncHttpClient {
    * Perform complete login flow
    */
   async login(): Promise<BncHttpLoginResult> {
-    this.log('🚀 Starting BNC HTTP login...');
+    this.log('Starting BNC HTTP login...');
     const startTime = Date.now();
 
     try {
@@ -233,7 +245,7 @@ export class BncHttpClient {
     const accounts = await this.discoverAccounts();
     
     if (accounts.length === 0) {
-      this.log('⚠️  No accounts found in dropdown');
+      this.log(' No accounts found in dropdown');
       return {
         success: true,
         message: 'No accounts found',
@@ -247,27 +259,50 @@ export class BncHttpClient {
 
     for (const account of accounts) {
       try {
-        this.log(`💰 Fetching transactions for ${account.label}...`);
+        this.log(`Fetching transactions for ${account.label}...`);
         
         const transactions = await this.fetchAccountTransactionsWithValue(account.value, account.accountId || account.label);
         
         if (transactions.length > 0) {
           allTransactions.push(...transactions);
           accountsScraped.push(account.label);
-          this.log(`   ✅ Got ${transactions.length} transactions from ${account.label}`);
+          this.log(`   Got ${transactions.length} transactions from ${account.label}`);
         } else {
-          this.log(`   ⚠️  No transactions for ${account.label}`);
+          this.log(`    No transactions for ${account.label}`);
         }
 
-      } catch (error: any) {
-        const errorMsg = `Failed to fetch ${account.label}: ${error.message}`;
-        this.log(`   ❌ ${errorMsg}`);
+      } catch (error: unknown) {
+        const errorMsg = `Failed to fetch ${account.label}: ${error instanceof Error ? error.message : String(error)}`;
+        this.log(`   ${errorMsg}`);
         errors.push(errorMsg);
       }
     }
 
     const elapsed = Date.now() - startTime;
-    this.log(`🎉 Fetched ${allTransactions.length} transactions from ${accountsScraped.length} accounts in ${elapsed}ms`);
+
+    // If the session expired mid-scrape (BNC responds Type 505, which flips
+    // isAuthenticated to false), an empty/partial result is NOT "no transactions".
+    // Surface it as a failure so the caller knows to re-login instead of trusting
+    // an empty success.
+    if (!this.isAuthenticated) {
+      this.log(' BNC session expired during scrape');
+      return {
+        success: false,
+        message: 'BNC session expired during scrape (re-login required)',
+        data: allTransactions,
+        timestamp: new Date(),
+        bankName: 'BNC',
+        accountsFound: accountsScraped.length,
+        transactionsExtracted: allTransactions.length,
+        error: 'session_expired',
+        metadata: {
+          accountsScraped,
+          errors: errors.length > 0 ? errors : undefined
+        }
+      };
+    }
+
+    this.log(`Fetched ${allTransactions.length} transactions from ${accountsScraped.length} accounts in ${elapsed}ms`);
 
     return {
       success: true,
@@ -353,22 +388,22 @@ export class BncHttpClient {
       try {
         const jsonResponse = JSON.parse(result.html);
         
-        if (jsonResponse.Type === 200 && jsonResponse.Value) {
-          return this.parseTransactionsHtml(jsonResponse.Value, accountName);
-        } else if (jsonResponse.Type === 300 || jsonResponse.Type === 350 || jsonResponse.Type === 500) {
+        if (jsonResponse.Type === BNC_RESPONSE.SUCCESS && jsonResponse.Value) {
+          return this.parser.parse(jsonResponse.Value, accountName);
+        } else if (BNC_RESPONSE.EMPTY.includes(jsonResponse.Type)) {
           return [];
-        } else if (jsonResponse.Type === 505) {
+        } else if (jsonResponse.Type === BNC_RESPONSE.SESSION_EXPIRED) {
           this.isAuthenticated = false;
           return [];
         }
       } catch {
         if (result.html.includes('Tbl_Transactions')) {
-          return this.parseTransactionsHtml(result.html, accountName);
+          return this.parser.parse(result.html, accountName);
         }
       }
       
-    } catch (error: any) {
-      this.log(`   POST to transactions list failed: ${error.message}`);
+    } catch (error: unknown) {
+      this.log(`   POST to transactions list failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     return [];
@@ -386,7 +421,7 @@ export class BncHttpClient {
    * Call this before login if you suspect there's an existing session
    */
   async logout(): Promise<{ success: boolean; message: string }> {
-    this.log('🚪 Attempting logout...');
+    this.log('Attempting logout...');
     
     try {
       // Hit the logout endpoint to clear server-side session
@@ -428,7 +463,7 @@ export class BncHttpClient {
     this.isAuthenticated = false;
     this.currentToken = null;
     await this.httpClient.clearCookies();
-    this.log('🔄 Client reset');
+    this.log('Client reset');
   }
 
   // ==========================================================================
@@ -471,7 +506,7 @@ export class BncHttpClient {
       const response = JSON.parse(result.html) as BncPreLoginResponse;
       
       // BNC uses Type: 200 for success, Value contains HTML
-      const isSuccess = response.Type === 200 || response.Succeeded === true;
+      const isSuccess = response.Type === BNC_RESPONSE.SUCCESS || response.Succeeded === true;
       const htmlContent = response.Value || response.Content;
       
       this.log(`   PreLogin JSON: Type=${response.Type}, HasValue=${!!response.Value}, Message=${response.Message || 'none'}`);
@@ -538,7 +573,7 @@ export class BncHttpClient {
       const response = JSON.parse(result.html) as BncLoginResponse;
       
       // BNC uses Type: 200 for success, 500 for errors
-      const isSuccess = response.Type === 200 || response.Succeeded === true;
+      const isSuccess = response.Type === BNC_RESPONSE.SUCCESS || response.Succeeded === true;
       const redirectUrl = response.Value || response.ReturnUrl;
       
       this.log(`   Login JSON: Type=${response.Type}, Value=${(response.Value || 'none').substring(0, 100)}`);
@@ -604,7 +639,7 @@ export class BncHttpClient {
         return true;
       }
 
-      if (notOnLogin && html.length > 5000) {
+      if (notOnLogin && html.length > MIN_AUTHENTICATED_PAGE_LENGTH) {
         // Seems like we got past login
         return true;
       }
@@ -617,165 +652,6 @@ export class BncHttpClient {
       this.log(`   Verification error: ${message}`);
       return false;
     }
-  }
-
-  // ==========================================================================
-  // Internal: Transaction Parsing
-  // ==========================================================================
-
-  /**
-   * Parse transactions from HTML table
-   */
-  parseTransactionsHtml(html: string, accountName: string = ''): BncTransaction[] {
-    const $ = cheerio.load(html);
-    const transactions: BncTransaction[] = [];
-
-    // Find the transactions table
-    const table = $('#Tbl_Transactions');
-    
-    if (table.length === 0) {
-      this.log(`    No transaction table found`);
-      return [];
-    }
-
-    // Parse each row
-    table.find('tbody tr.cursor-pointer').each((_, row) => {
-      try {
-        const cells = $(row).find('td');
-        
-        if (cells.length < 4) return;
-
-        const dateStr = $(cells[0]).text().trim();
-        const typeStr = $(cells[1]).text().trim();
-        const reference = $(cells[2]).text().trim();
-        const amountStr = $(cells[3]).text().trim();
-
-        // Try to get description/memo from the next row (BNC uses collapsible detail rows)
-        const nextRow = $(row).next('tr');
-        let description = '';
-        
-        if (nextRow.length > 0) {
-          // Try multiple selectors for the memo/description text
-          description = nextRow.find('.font-size-custom').first().text().trim()
-            || nextRow.find('.collapse').text().trim()
-            || nextRow.find('div').first().text().trim()
-            || nextRow.find('td').text().trim();
-        }
-
-        // Parse date (format: DD/MM/YYYY or similar)
-        const date = this.parseDate(dateStr);
-        
-        // Parse amount and determine type
-        const amount = this.parseAmount(amountStr);
-        const transactionType = this.determineTransactionType(amountStr, typeStr);
-
-        // Generate deterministic transaction ID using hash of stable fields
-        // This ensures idempotency in Convex even if references are missing/duplicated
-        const stableKey = [
-          date,
-          String(Math.abs(amount)),
-          reference,
-          description || typeStr,
-          transactionType,
-          accountName
-        ].join('|');
-        const txnId = `bnc-${createHash('sha256').update(stableKey).digest('hex').slice(0, 16)}`;
-
-        const transaction: BncTransaction = {
-          id: txnId,
-          date,
-          description: description || typeStr,
-          amount: Math.abs(amount),
-          type: transactionType,
-          reference,
-          bankName: 'BNC',
-          transactionType: typeStr,
-          referenceNumber: reference,
-          accountName
-        };
-
-        transactions.push(transaction);
-
-      } catch {
-        // Skip malformed rows
-      }
-    });
-
-    return transactions;
-  }
-
-  // ==========================================================================
-  // Internal: Parsing Utilities
-  // ==========================================================================
-
-  private parseDate(dateString: string): string {
-    // Handle various date formats
-    const cleanDate = dateString.trim();
-    
-    // Try DD/MM/YYYY
-    const slashMatch = cleanDate.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (slashMatch) {
-      const [, day, month, year] = slashMatch;
-      const fullYear = year.length === 2 ? `20${year}` : year;
-      return `${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    // Try DD-MM-YYYY
-    const dashMatch = cleanDate.match(/(\d{1,2})-(\d{1,2})-(\d{2,4})/);
-    if (dashMatch) {
-      const [, day, month, year] = dashMatch;
-      const fullYear = year.length === 2 ? `20${year}` : year;
-      return `${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    return dateString;
-  }
-
-  private parseAmount(amountString: string): number {
-    // Remove currency symbols and spaces
-    let clean = amountString.replace(/[^\d,.-]/g, '').trim();
-    
-    // Handle Venezuelan format: 1.234,56 (dots for thousands, comma for decimals)
-    // Check if comma appears after last dot (Venezuelan format)
-    const lastDot = clean.lastIndexOf('.');
-    const lastComma = clean.lastIndexOf(',');
-    
-    if (lastComma > lastDot) {
-      // Venezuelan format: remove dots, replace comma with dot
-      clean = clean.replace(/\./g, '').replace(',', '.');
-    } else if (lastDot > lastComma) {
-      // US format: just remove commas
-      clean = clean.replace(/,/g, '');
-    }
-
-    return parseFloat(clean) || 0;
-  }
-
-  private determineTransactionType(amountString: string, typeString: string): 'debit' | 'credit' {
-    // Check amount string for negative indicator
-    if (amountString.includes('-')) {
-      return 'debit';
-    }
-    
-    // Check type string for common patterns
-    const lowerType = typeString.toLowerCase();
-    const debitPatterns = ['débito', 'debito', 'cargo', 'retiro', 'pago', 'transferencia enviada'];
-    const creditPatterns = ['crédito', 'credito', 'abono', 'depósito', 'deposito', 'transferencia recibida'];
-    
-    for (const pattern of debitPatterns) {
-      if (lowerType.includes(pattern)) {
-        return 'debit';
-      }
-    }
-    
-    for (const pattern of creditPatterns) {
-      if (lowerType.includes(pattern)) {
-        return 'credit';
-      }
-    }
-
-    // Default to credit for positive amounts
-    return 'credit';
   }
 
   // ==========================================================================

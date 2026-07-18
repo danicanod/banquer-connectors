@@ -34,7 +34,6 @@ export interface NetworkLogEntry {
 
 export interface NetworkLoggerConfig {
   logToConsole?: boolean;
-  saveToFile?: boolean;
   outputPath?: string;
   filterEssentialOnly?: boolean;
   redactSensitive?: boolean;
@@ -55,7 +54,6 @@ export class NetworkLogger {
   constructor(config: NetworkLoggerConfig = {}) {
     this.config = {
       logToConsole: false,
-      saveToFile: true,
       outputPath: `network-capture-${Date.now()}.json`,
       filterEssentialOnly: true,
       redactSensitive: true,

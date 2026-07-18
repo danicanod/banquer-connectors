@@ -149,16 +149,6 @@ export class FacebankAuth extends BaseBankAuth<
     throw new Error('Login did not reach the home screen within the expected number of steps');
   }
 
-  protected async verifyLoginSuccess(): Promise<boolean> {
-    const page = this.page;
-    if (!page) return false;
-    for (let i = 0; i < 20; i++) {
-      if (page.url().toLowerCase().includes(FACEBANK_ROUTES.HOME)) return true;
-      await page.waitForTimeout(500);
-    }
-    return page.url().toLowerCase().includes(FACEBANK_ROUTES.HOME);
-  }
-
   // --------------------------------------------------------------------------
   // Step handling
   // --------------------------------------------------------------------------

@@ -13,7 +13,6 @@
  *   protected getUserIdentifier(): string { return this.credentials.username.slice(0, 3); }
  *   protected getLoginUrl(): string { return 'https://mybank.com/login'; }
  *   protected async performBankSpecificLogin(): Promise<boolean> { ... }
- *   protected async verifyLoginSuccess(): Promise<boolean> { ... }
  *   getCredentials(): Record<string, unknown> { return { username: this.credentials.username }; }
  * }
  * ```
@@ -111,7 +110,7 @@ export abstract class BaseBankAuth<
     this.log(`Performance config: CSS:${this.performanceConfig.blockCSS}, IMG:${this.performanceConfig.blockImages}, JS:${this.performanceConfig.blockNonEssentialJS}`);
     
     if (this.config.debug) {
-      this.log('🐛 Debug mode enabled - Playwright debugger will pause at key points');
+      this.log('Debug mode enabled - Playwright debugger will pause at key points');
     }
   }
 
@@ -148,20 +147,18 @@ export abstract class BaseBankAuth<
   protected abstract performBankSpecificLogin(): Promise<boolean>;
 
   /**
-   * Verify if login was successful using bank-specific indicators
-   * Subclasses must implement this
-   */
-  protected abstract verifyLoginSuccess(): Promise<boolean>;
-
-  /**
-   * Log message to console and file
+   * Log a diagnostic message. Silent unless the consumer opted into `debug`.
+   *
+   * This gating matters for a published library: without it, every login would
+   * spam the consumer's stdout AND write a `debug-<bank>-<user>-<ts>.log` file
+   * into their working directory as a side effect. Both only happen in debug mode.
    */
   protected log(message: string): void {
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ${message}`;
-    
+    if (!this.config.debug) return;
+
     console.log(message);
-    
+
+    const logEntry = `[${new Date().toISOString()}] ${message}`;
     try {
       appendFileSync(this.logFile, logEntry + '\n');
     } catch (error) {
@@ -216,7 +213,7 @@ export abstract class BaseBankAuth<
     if (byCategory.nonEssentialJs > 0) parts.push(`js=${byCategory.nonEssentialJs}`);
     
     const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-    this.log(`🧱 Blocked resources: ${total}${breakdown}`);
+    this.log(`Blocked resources: ${total}${breakdown}`);
   }
 
   /**
@@ -225,8 +222,8 @@ export abstract class BaseBankAuth<
    */
   protected async debugPause(message: string): Promise<void> {
     if (this.config.debug && this.page) {
-      this.log(`🐛 DEBUG PAUSE: ${message}`);
-      this.log('💡 Use Playwright Inspector to debug. Continue execution when ready.');
+      this.log(`DEBUG PAUSE: ${message}`);
+      this.log('Use Playwright Inspector to debug. Continue execution when ready.');
       await this.page.pause();
     }
   }
@@ -294,7 +291,7 @@ export abstract class BaseBankAuth<
     if (!this.page) return false;
     
     try {
-      this.log('⏳ Waiting for navigation to complete...');
+      this.log('Waiting for navigation to complete...');
       
       // First try immediate check - maybe elements are already there
       for (const selector of expectedSelectors) {
@@ -561,11 +558,11 @@ export abstract class BaseBankAuth<
     }
     
     if (this.config.debug) {
-      this.log('🐛 Optimized browser initialized in debug mode');
-      this.log(`📱 Viewport: 1366x768, Headless: ${this.config.headless}`);
-      this.log(`⏱️  Timeout: ${this.config.timeout}ms`);
+      this.log('Optimized browser initialized in debug mode');
+      this.log(`Viewport: 1366x768, Headless: ${this.config.headless}`);
+      this.log(` Timeout: ${this.config.timeout}ms`);
       this.log(`Performance optimizations: ${JSON.stringify(this.performanceConfig)}`);
-      this.log(`📄 Log file: ${this.logFile}`);
+      this.log(`Log file: ${this.logFile}`);
     }
   }
 
@@ -587,7 +584,7 @@ export abstract class BaseBankAuth<
           try {
             const body = await response.text();
             if (body.includes('GUEG') || body.includes('no podemos procesar')) {
-              this.log(`🔴 BOT DETECTION in response: ${url}`);
+              this.log(`BOT DETECTION in response: ${url}`);
               // Log request headers that might be the issue
               const request = response.request();
               const headers = request.headers();
@@ -611,7 +608,7 @@ export abstract class BaseBankAuth<
    * This overrides various browser properties that are commonly checked
    */
   protected async applyStealthMeasures(context: BrowserContext): Promise<void> {
-    this.log('🥷 Applying stealth measures to context (affects all frames)...');
+    this.log('Applying stealth measures to context (affects all frames)...');
     
     await context.addInitScript(() => {
       // Override navigator.webdriver - most common bot detection
@@ -707,7 +704,7 @@ export abstract class BaseBankAuth<
    * Main login method template - implements common flow
    */
   async login(): Promise<TLoginResult> {
-    this.log(`🚀 Starting ${this.bankName} authentication process...`);
+    this.log(`Starting ${this.bankName} authentication process...`);
     
     try {
       // Initialize browser if not already done
@@ -735,7 +732,7 @@ export abstract class BaseBankAuth<
       
       if (loginSuccess) {
         this.isAuthenticated = true;
-        this.log(`🎉 ${this.bankName} authentication successful!`);
+        this.log(`${this.bankName} authentication successful!`);
         
         await this.debugPause('Login completed successfully - authenticated page ready');
         
@@ -746,7 +743,7 @@ export abstract class BaseBankAuth<
 
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log(`💥 Authentication error: ${message}`);
+      this.log(`Authentication error: ${message}`);
       await this.debugPause(`Error occurred: ${message} - inspect page state`);
       return this.createFailureResult(message || 'Unknown error occurred');
     }
@@ -829,7 +826,7 @@ export abstract class BaseBankAuth<
     try {
       const content = this.getLogContent();
       writeFileSync(targetPath, content);
-      this.log(`📤 Logs exported to: ${targetPath}`);
+      this.log(`Logs exported to: ${targetPath}`);
       return true;
     } catch (error) {
       this.log(`Failed to export logs: ${error}`);
@@ -869,8 +866,8 @@ export abstract class BaseBankAuth<
       }
 
       this.isAuthenticated = false;
-      this.log('🧹 Optimized browser resources cleaned up');
-      this.log(`📄 Debug session log saved to: ${this.logFile}`);
+      this.log('Optimized browser resources cleaned up');
+      this.log(`Debug session log saved to: ${this.logFile}`);
       
     } catch (error) {
       this.log(` Error during cleanup: ${error}`);

@@ -1,5 +1,6 @@
 import { Frame, ElementHandle } from 'playwright';
-import { SecurityQuestionMap } from '../types/index.js';
+import { SecurityQuestionMap, SECURITY_QUESTION_SLOTS } from '../types/index.js';
+import { normalizeText } from '../../../shared/utils/text.js';
 
 /**
  * Result of handling security questions
@@ -25,17 +26,26 @@ export interface SecurityQuestionsResult {
 
 export class SecurityQuestionsHandler {
   private questionMap: SecurityQuestionMap;
+  private readonly debug: boolean;
   private static readonly MIN_REQUIRED_ANSWERS = 2;
 
-  constructor(securityQuestionsConfig: string) {
+  constructor(securityQuestionsConfig: string, debug = false) {
+    this.debug = debug;
     this.questionMap = this.parseSecurityQuestions(securityQuestionsConfig);
+  }
+
+  /** Debug-gated logger — silent unless the connector was created with `debug: true`. */
+  private log(message: string): void {
+    if (this.debug) {
+      console.log(message);
+    }
   }
 
   private parseSecurityQuestions(securityQuestions: string): SecurityQuestionMap {
     const questionMap: SecurityQuestionMap = {};
     
     if (!securityQuestions) {
-      console.log('[SecurityQuestions] No security questions configuration found');
+      this.log('[SecurityQuestions] No security questions configuration found');
       return questionMap;
     }
     
@@ -44,43 +54,34 @@ export class SecurityQuestionsHandler {
     for (const pair of pairs) {
       const [keyword, answer] = pair.split(':');
       if (keyword && answer) {
-        const normalizedKeyword = keyword.trim().toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, ''); // Remove accents
-        
+        const normalizedKeyword = normalizeText(keyword);
+
         questionMap[normalizedKeyword] = answer.trim();
-        console.log(`[SecurityQuestions] Mapped keyword: "${keyword.trim()}" -> answer configured`);
+        this.log(`[SecurityQuestions] Mapped keyword: "${keyword.trim()}" -> answer configured`);
       }
     }
     
     return questionMap;
   }
 
-  private normalizeText(text: string): string {
-    return text.toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // Remove accents
-      .replace(/[¿?¡!]/g, '') // Remove question marks and exclamations
-      .trim();
-  }
 
   private findMatchingAnswer(questionText: string): { answer: string | null; matchedKeyword: string | null } {
-    const normalizedQuestion = this.normalizeText(questionText);
+    const normalizedQuestion = normalizeText(questionText);
     
     for (const [keyword, answer] of Object.entries(this.questionMap)) {
       if (normalizedQuestion.includes(keyword)) {
-        console.log(`[SecurityQuestions] Match found: keyword="${keyword}"`);
+        this.log(`[SecurityQuestions] Match found: keyword="${keyword}"`);
         return { answer, matchedKeyword: keyword };
       }
     }
     
     // Log the FULL question text so user can configure the right keyword
     const keywords = Object.keys(this.questionMap);
-    console.log(`[SecurityQuestions] NO MATCH for question:`);
-    console.log(`[SecurityQuestions]    FULL TEXT: "${questionText.trim()}"`);
-    console.log(`[SecurityQuestions]    NORMALIZED: "${normalizedQuestion}"`);
-    console.log(`[SecurityQuestions]    Your keywords: [${keywords.join(', ')}]`);
-    console.log(`[SecurityQuestions]    💡 Add a keyword from this question to BANESCO_SECURITY_QUESTIONS`);
+    this.log(`[SecurityQuestions] NO MATCH for question:`);
+    this.log(`[SecurityQuestions]    FULL TEXT: "${questionText.trim()}"`);
+    this.log(`[SecurityQuestions]    NORMALIZED: "${normalizedQuestion}"`);
+    this.log(`[SecurityQuestions]    Your keywords: [${keywords.join(', ')}]`);
+    this.log(`[SecurityQuestions]    Add a keyword from this question to BANESCO_SECURITY_QUESTIONS`);
     
     return { answer: null, matchedKeyword: null };
   }
@@ -126,7 +127,7 @@ export class SecurityQuestionsHandler {
    * Returns detailed result including whether ALL visible questions were answered.
    */
   async handleSecurityQuestions(frame: Frame): Promise<SecurityQuestionsResult> {
-    console.log('[SecurityQuestions] Handling security questions...');
+    this.log('[SecurityQuestions] Handling security questions...');
     
     const result: SecurityQuestionsResult = {
       allAnswered: false,
@@ -138,11 +139,11 @@ export class SecurityQuestionsHandler {
     };
     
     if (Object.keys(this.questionMap).length === 0) {
-      console.log('[SecurityQuestions] ERROR: No question-answer mappings configured');
+      this.log('[SecurityQuestions] ERROR: No question-answer mappings configured');
       return result;
     }
     
-    console.log(`[SecurityQuestions] ${Object.keys(this.questionMap).length} keyword mappings loaded`);
+    this.log(`[SecurityQuestions] ${Object.keys(this.questionMap).length} keyword mappings loaded`);
     
     // Strategy 1: Try known Banesco element IDs with robust selectors
     const knownResult = await this.tryKnownElementsRobust(frame);
@@ -152,7 +153,7 @@ export class SecurityQuestionsHandler {
     
     // Strategy 2: Fallback scan if no questions found via known elements
     if (result.questionsFound === 0) {
-      console.log('[SecurityQuestions] Known elements not found, trying fallback scan...');
+      this.log('[SecurityQuestions] Known elements not found, trying fallback scan...');
       const fallbackResult = await this.tryFallbackScan(frame, new Set());
       result.questionsFound = fallbackResult.questionsFound;
       result.answersProvided = fallbackResult.answersProvided;
@@ -163,7 +164,7 @@ export class SecurityQuestionsHandler {
     result.allAnswered = result.questionsFound > 0 && result.answersProvided === result.questionsFound;
     result.meetsMinimum = result.answersProvided >= SecurityQuestionsHandler.MIN_REQUIRED_ANSWERS;
     
-    console.log(
+    this.log(
       `[SecurityQuestions] Result: ${result.answersProvided}/${result.questionsFound} questions answered ` +
       `(minRequired=${SecurityQuestionsHandler.MIN_REQUIRED_ANSWERS})`
     );
@@ -172,7 +173,7 @@ export class SecurityQuestionsHandler {
       // Log details about what failed
       for (const detail of result.details) {
         if (detail.status !== 'answered') {
-          console.log(`[SecurityQuestions] FAILED: ${detail.labelId} - ${detail.status} - "${detail.questionText.substring(0, 40)}..."`);
+          this.log(`[SecurityQuestions] FAILED: ${detail.labelId} - ${detail.status} - "${detail.questionText.substring(0, 40)}..."`);
         }
       }
     }
@@ -188,12 +189,7 @@ export class SecurityQuestionsHandler {
     answersProvided: number;
     details: SecurityQuestionsResult['details'];
   }> {
-    const questionElements = [
-      { labelId: 'lblPrimeraP', inputId: 'txtPrimeraR' },
-      { labelId: 'lblSegundaP', inputId: 'txtSegundaR' },
-      { labelId: 'lblTerceraP', inputId: 'txtTerceraR' },
-      { labelId: 'lblCuartaP', inputId: 'txtCuartaR' }
-    ];
+    const questionElements = SECURITY_QUESTION_SLOTS;
     
     let questionsFound = 0;
     let answersProvided = 0;
@@ -217,13 +213,13 @@ export class SecurityQuestionsHandler {
         // Get the question text
         const questionText = await labelElement.textContent();
         if (!questionText || questionText.trim().length < 5) {
-          console.log(`[SecurityQuestions] Label ${element.labelId} found but empty or too short`);
+          this.log(`[SecurityQuestions] Label ${element.labelId} found but empty or too short`);
           continue;
         }
         
         // This is a visible question - count it
         questionsFound++;
-        console.log(`[SecurityQuestions] Found question #${questionsFound} (${element.labelId}): "${questionText.substring(0, 60)}..."`);
+        this.log(`[SecurityQuestions] Found question #${questionsFound} (${element.labelId}): "${questionText.substring(0, 60)}..."`);
         
         // Look for an answer for this question
         const { answer, matchedKeyword } = this.findMatchingAnswer(questionText);
@@ -240,7 +236,7 @@ export class SecurityQuestionsHandler {
         // Find the input field using robust selectors
         const inputElement = await this.findElementRobust(frame, element.inputId);
         if (!inputElement) {
-          console.log(`[SecurityQuestions] Input ${element.inputId} not found (tried robust selectors)`);
+          this.log(`[SecurityQuestions] Input ${element.inputId} not found (tried robust selectors)`);
           details.push({
             labelId: element.labelId,
             questionText: questionText.trim(),
@@ -254,7 +250,7 @@ export class SecurityQuestionsHandler {
         const isEnabled = await inputElement.isEnabled().catch(() => false);
         
         if (!isVisible || !isEnabled) {
-          console.log(`[SecurityQuestions] Input ${element.inputId} not accessible (visible=${isVisible}, enabled=${isEnabled})`);
+          this.log(`[SecurityQuestions] Input ${element.inputId} not accessible (visible=${isVisible}, enabled=${isEnabled})`);
           details.push({
             labelId: element.labelId,
             questionText: questionText.trim(),
@@ -265,12 +261,12 @@ export class SecurityQuestionsHandler {
         
         // Fill the field
         try {
-          console.log(`[SecurityQuestions] Filling ${element.inputId} with answer for keyword "${matchedKeyword}"`);
+          this.log(`[SecurityQuestions] Filling ${element.inputId} with answer for keyword "${matchedKeyword}"`);
           await inputElement.click();
           await inputElement.fill(answer);
           await frame.waitForTimeout(300);
           answersProvided++;
-          console.log(`[SecurityQuestions] Successfully filled ${element.inputId}`);
+          this.log(`[SecurityQuestions] Successfully filled ${element.inputId}`);
           details.push({
             labelId: element.labelId,
             questionText: questionText.trim(),
@@ -278,7 +274,7 @@ export class SecurityQuestionsHandler {
           });
           
         } catch (e) {
-          console.log(`[SecurityQuestions] ERROR filling ${element.inputId}: ${e}`);
+          this.log(`[SecurityQuestions] ERROR filling ${element.inputId}: ${e}`);
           details.push({
             labelId: element.labelId,
             questionText: questionText.trim(),
@@ -287,7 +283,7 @@ export class SecurityQuestionsHandler {
         }
         
       } catch (e) {
-        console.log(`[SecurityQuestions] Error processing ${element.labelId}: ${e}`);
+        this.log(`[SecurityQuestions] Error processing ${element.labelId}: ${e}`);
       }
     }
     
@@ -310,7 +306,7 @@ export class SecurityQuestionsHandler {
     try {
       // Find all labels, spans, or divs that might contain question text
       const potentialLabels = await frame.$$('label, span, div, td');
-      console.log(`[SecurityQuestions] Fallback: Scanning ${potentialLabels.length} elements for questions`);
+      this.log(`[SecurityQuestions] Fallback: Scanning ${potentialLabels.length} elements for questions`);
       
       for (const labelEl of potentialLabels) {
         try {
@@ -318,7 +314,7 @@ export class SecurityQuestionsHandler {
           if (!text || text.length < 10 || text.length > 200) continue;
           
           // Check if this looks like a security question
-          const normalizedText = this.normalizeText(text);
+          const normalizedText = normalizeText(text);
           const looksLikeQuestion = normalizedText.includes('pregunta') || 
                                     normalizedText.includes('cual') ||
                                     normalizedText.includes('nombre') ||
@@ -336,7 +332,7 @@ export class SecurityQuestionsHandler {
           
           questionsFound++;
           const labelId = `fallback_${questionsFound}`;
-          console.log(`[SecurityQuestions] Fallback: Found question #${questionsFound}: "${text.substring(0, 50)}..."`);
+          this.log(`[SecurityQuestions] Fallback: Found question #${questionsFound}: "${text.substring(0, 50)}..."`);
           
           // Try to find an answer
           const { answer, matchedKeyword } = this.findMatchingAnswer(text);
@@ -388,7 +384,7 @@ export class SecurityQuestionsHandler {
           }
           
           if (!inputEl) {
-            console.log(`[SecurityQuestions] Fallback: No input found near question`);
+            this.log(`[SecurityQuestions] Fallback: No input found near question`);
             details.push({
               labelId,
               questionText: text.trim(),
@@ -399,7 +395,7 @@ export class SecurityQuestionsHandler {
           
           // Skip if we already filled this input
           if (filledInputs.has(inputId)) {
-            console.log(`[SecurityQuestions] Fallback: Input ${inputId} already filled, skipping`);
+            this.log(`[SecurityQuestions] Fallback: Input ${inputId} already filled, skipping`);
             continue;
           }
           
@@ -416,20 +412,20 @@ export class SecurityQuestionsHandler {
           }
           
           try {
-            console.log(`[SecurityQuestions] Fallback: Filling input for keyword "${matchedKeyword}"`);
+            this.log(`[SecurityQuestions] Fallback: Filling input for keyword "${matchedKeyword}"`);
             await inputEl.click();
             await inputEl.fill(answer);
             await frame.waitForTimeout(300);
             answersProvided++;
             filledInputs.add(inputId);
-            console.log(`[SecurityQuestions] Fallback: Successfully filled input`);
+            this.log(`[SecurityQuestions] Fallback: Successfully filled input`);
             details.push({
               labelId,
               questionText: text.trim(),
               status: 'answered'
             });
           } catch (e) {
-            console.log(`[SecurityQuestions] Fallback: ERROR filling input: ${e}`);
+            this.log(`[SecurityQuestions] Fallback: ERROR filling input: ${e}`);
             details.push({
               labelId,
               questionText: text.trim(),
@@ -441,17 +437,9 @@ export class SecurityQuestionsHandler {
         }
       }
     } catch (e) {
-      console.log(`[SecurityQuestions] Fallback scan error: ${e}`);
+      this.log(`[SecurityQuestions] Fallback scan error: ${e}`);
     }
     
     return { questionsFound, answersProvided, details };
-  }
-
-  hasQuestions(): boolean {
-    return Object.keys(this.questionMap).length > 0;
-  }
-
-  getQuestionCount(): number {
-    return Object.keys(this.questionMap).length;
   }
 }
