@@ -1,12 +1,12 @@
 /**
- * Banker Venezuela - Banking Client Library
+ * Banquer Connectors - Venezuelan bank connectors (Banesco, BNC)
  *
  * A TypeScript library for connecting to Venezuelan bank accounts.
  * Supports Banesco (hybrid: Playwright login + HTTP fetch) and BNC (pure HTTP).
  *
  * @example
  * ```typescript
- * import { createBanescoClient, createBncClient } from '@danicanod/banker-venezuela';
+ * import { createBanescoClient, createBncClient } from '@danicanod/banquer-connectors';
  *
  * // Banesco usage (hybrid mode - Playwright for login, HTTP for data)
  * const banesco = createBanescoClient({

@@ -26,7 +26,7 @@
  *
  * @example
  * ```typescript
- * import { createBanescoClient } from '@danicanod/banker-venezuela';
+ * import { createBanescoClient } from '@danicanod/banquer-connectors';
  *
  * const client = createBanescoClient({
  *   username: 'V12345678',
@@ -70,6 +70,14 @@ export interface BanescoClientConfig {
   timeout?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
+  /**
+   * Connect to a remote browser over CDP (e.g. a Browserbase session's
+   * `connectUrl`) instead of launching a local Chromium. When set, the login
+   * step runs in the remote browser. Note: after login the client fetches data
+   * over in-process HTTP, so the host's egress IP differs from the remote
+   * browser's — verify the target bank tolerates that before relying on it.
+   */
+  browserWSEndpoint?: string;
 }
 
 export interface BanescoLoginResult {
@@ -84,7 +92,9 @@ export interface BanescoLoginResult {
 
 export class BanescoClient {
   private credentials: BanescoClientCredentials;
-  private config: Required<BanescoClientConfig>;
+  // browserWSEndpoint stays genuinely optional; the rest have resolved defaults.
+  private config: Required<Omit<BanescoClientConfig, 'browserWSEndpoint'>> &
+    Pick<BanescoClientConfig, 'browserWSEndpoint'>;
   private httpClient: BanescoHttpClient | null = null;
   private auth: BanescoAuth | null = null;
   private isLoggedIn: boolean = false;
@@ -95,6 +105,7 @@ export class BanescoClient {
       headless: config.headless ?? true,
       timeout: config.timeout ?? 60000,
       debug: config.debug ?? false,
+      browserWSEndpoint: config.browserWSEndpoint,
     };
   }
 
@@ -116,6 +127,7 @@ export class BanescoClient {
       this.auth = new BanescoAuth(this.credentials, {
         headless: this.config.headless,
         timeout: this.config.timeout,
+        browserWSEndpoint: this.config.browserWSEndpoint,
       });
 
       const loginResult = await this.auth.login();

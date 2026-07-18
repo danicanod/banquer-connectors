@@ -1,16 +1,16 @@
 /**
  * Unified Transaction Model and Normalization Utilities
  *
- * @deprecated Import from '@danicanod/banker/core' instead.
+ * @deprecated Import from '@danicanod/banquer-connectors/core' instead.
  * This module re-exports from core for backward compatibility.
  *
  * @example
  * ```typescript
  * // New way (preferred):
- * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banker/core';
+ * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banquer-connectors/core';
  *
  * // Old way (still works):
- * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banker';
+ * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banquer-connectors';
  * ```
  */
 

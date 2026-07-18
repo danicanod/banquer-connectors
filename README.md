@@ -1,4 +1,4 @@
-# Banker
+# Banquer Connectors
 
 <div align="center">
 
@@ -26,7 +26,7 @@
 ## Installation
 
 ```bash
-npm install @danicanod/banker
+npm install @danicanod/banquer-connectors
 ```
 
 ### Prerequisites
@@ -41,7 +41,7 @@ Playwright Chromium is installed automatically via postinstall (required for Ban
 ### Banesco (Hybrid Mode)
 
 ```typescript
-import { createBanescoClient, normalizeTransactions } from '@danicanod/banker';
+import { createBanescoClient, normalizeTransactions } from '@danicanod/banquer-connectors';
 
 const client = createBanescoClient({
   username: 'V12345678',
@@ -63,7 +63,7 @@ await client.close();
 ### BNC (Pure HTTP - No Browser)
 
 ```typescript
-import { createBncClient, normalizeTransactions } from '@danicanod/banker';
+import { createBncClient, normalizeTransactions } from '@danicanod/banquer-connectors';
 
 const client = createBncClient({
   id: 'V12345678',
@@ -84,7 +84,7 @@ await client.close();
 ### BanescoClient
 
 ```typescript
-import { createBanescoClient } from '@danicanod/banker';
+import { createBanescoClient } from '@danicanod/banquer-connectors';
 
 const client = createBanescoClient(credentials, config);
 
@@ -97,7 +97,7 @@ await client.close();
 ### BncClient
 
 ```typescript
-import { createBncClient } from '@danicanod/banker';
+import { createBncClient } from '@danicanod/banquer-connectors';
 
 const client = createBncClient(credentials, config);
 
@@ -127,7 +127,7 @@ interface Transaction {
 ### Normalization API
 
 ```typescript
-import { normalizeTransactions, makeTxnKey } from '@danicanod/banker';
+import { normalizeTransactions, makeTxnKey } from '@danicanod/banquer-connectors';
 
 // Normalize transactions
 const normalized = normalizeTransactions('banesco', transactions);
@@ -141,9 +141,10 @@ const key = makeTxnKey('banesco', { date, amount, description, type });
 ```typescript
 // Banesco
 interface BanescoClientConfig {
-  headless?: boolean;   // Default: true
-  timeout?: number;     // Default: 60000ms
-  debug?: boolean;      // Default: false
+  headless?: boolean;          // Default: true
+  timeout?: number;            // Default: 60000ms
+  debug?: boolean;             // Default: false
+  browserWSEndpoint?: string;  // Optional: attach to a remote browser over CDP
 }
 
 // BNC
@@ -152,6 +153,27 @@ interface BncClientConfig {
   debug?: boolean;      // Default: false
 }
 ```
+
+### Remote browser (CDP)
+
+By default Banesco login launches a local Chromium. To run the login step in a
+**remote browser** instead — e.g. a [Browserbase](https://browserbase.com)
+session on a server that can't launch Chromium — pass its CDP `connectUrl` as
+`browserWSEndpoint`:
+
+```typescript
+import { createBanescoClient } from '@danicanod/banquer-connectors';
+
+const client = createBanescoClient(credentials, {
+  browserWSEndpoint: session.connectUrl, // e.g. from Browserbase
+});
+await client.login();
+```
+
+> Note: login runs in the remote browser, but data is then fetched over
+> in-process HTTP, so the host's egress IP differs from the remote browser's.
+> Verify the bank tolerates that before relying on it in production. BNC is pure
+> HTTP and never uses a browser.
 
 ## Environment Variables
 

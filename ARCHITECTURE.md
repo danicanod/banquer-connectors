@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the module structure and dependency rules for the banker library.
+This document describes the module structure and dependency rules for the banquer-connectors library.
 
 ## Module Layout
 
@@ -45,14 +45,14 @@ src/
 
 The library exposes:
 
-1. **Main entrypoint** (`@danicanod/banker`)
+1. **Main entrypoint** (`@danicanod/banquer-connectors`)
    - `createBanescoClient`, `createBncClient` - Client factories
    - `normalizeTransactions`, `makeTxnKey` - Transaction utilities
 
-2. **Bank-specific entrypoints** (`@danicanod/banker/banesco`, `@danicanod/banker/bnc`)
+2. **Bank-specific entrypoints** (`@danicanod/banquer-connectors/banesco`, `@danicanod/banquer-connectors/bnc`)
    - Advanced APIs for custom flows
 
-3. **Core utilities** (`@danicanod/banker/core`)
+3. **Core utilities** (`@danicanod/banquer-connectors/core`)
    - Transaction normalization and types only (no bank dependencies)
 
 ## Adding a New Bank

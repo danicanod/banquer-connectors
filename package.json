@@ -1,6 +1,6 @@
 {
-  "name": "@danicanod/banker",
-  "version": "3.0.0",
+  "name": "@danicanod/banquer-connectors",
+  "version": "3.1.0",
   "description": "TypeScript library for connecting to Venezuelan bank accounts (Banesco & BNC). Hybrid Playwright/HTTP architecture for reliability and speed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -57,12 +57,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danicanod/banker.git"
+    "url": "git+https://github.com/danicanod/banquer-connectors.git"
   },
   "bugs": {
-    "url": "https://github.com/danicanod/banker/issues"
+    "url": "https://github.com/danicanod/banquer-connectors/issues"
   },
-  "homepage": "https://github.com/danicanod/banker#readme",
+  "homepage": "https://github.com/danicanod/banquer-connectors#readme",
   "author": {
     "name": "Daniel Sanchez",
     "email": "danicanod@gmail.com",

@@ -5,7 +5,7 @@
  *
  * @example
  * ```typescript
- * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banker/core';
+ * import { normalizeTransaction, makeTxnKey, type Transaction } from '@danicanod/banquer-connectors/core';
  *
  * // Normalize any bank's transaction
  * const normalized = normalizeTransaction('banesco', {

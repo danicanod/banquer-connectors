@@ -67,6 +67,8 @@ export abstract class BaseBankAuth<
   protected browser: Browser | null = null;
   protected page: Page | null = null;
   protected context: BrowserContext | null = null;
+  /** True when the browser was attached over CDP (remote) rather than launched locally */
+  protected isRemoteBrowser: boolean = false;
   protected credentials: TCredentials;
   protected config: Required<TConfig>;
   protected isAuthenticated: boolean = false;
@@ -450,78 +452,102 @@ export abstract class BaseBankAuth<
    */
   protected async initializeBrowser(): Promise<void> {
     this.log('Initializing optimized browser...');
-    
+
     // Reset blocked stats for new session
     this.resetBlockedStats();
-    
-    const launchArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox', 
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu',
-      // Performance optimizations
-      '--disable-extensions',
-      '--disable-plugins',
-      '--disable-default-apps',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-      '--disable-ipc-flooding-protection',
-      // STEALTH: Always disable automation detection (not just headless)
-      '--disable-blink-features=AutomationControlled',
-    ];
-    
-    // Add additional performance args if in headless mode
-    if (this.config.headless) {
-      launchArgs.push(
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--run-all-compositor-stages-before-draw'
-      );
+
+    // Realistic browser headers, shared by both local and remote modes.
+    // In local mode these go into newContext(); in remote mode they are the
+    // only context option we can still set after attaching.
+    const extraHTTPHeaders = {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'es-VE,es-419;q=0.9,es;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"'
+    };
+
+    if (this.config.browserWSEndpoint) {
+      // ---- Remote browser (attach over CDP, e.g. Browserbase) ----
+      this.isRemoteBrowser = true;
+      this.log('Connecting to remote browser over CDP...');
+      this.browser = await chromium.connectOverCDP(this.config.browserWSEndpoint);
+      // Reuse the remote session's existing context/page (the Browserbase
+      // pattern); only create them if the remote browser started empty.
+      this.context = this.browser.contexts()[0] ?? await this.browser.newContext();
+      this.page = this.context.pages()[0] ?? await this.context.newPage();
+      // UA / locale / timezone / viewport are fixed by the remote session and
+      // cannot be re-set on an existing context — only headers can.
+      await this.context.setExtraHTTPHeaders(extraHTTPHeaders);
+    } else {
+      // ---- Local browser (launch our own Chromium) ----
+      this.isRemoteBrowser = false;
+
+      const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        // Performance optimizations
+        '--disable-extensions',
+        '--disable-plugins',
+        '--disable-default-apps',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+        '--disable-ipc-flooding-protection',
+        // STEALTH: Always disable automation detection (not just headless)
+        '--disable-blink-features=AutomationControlled',
+      ];
+
+      // Add additional performance args if in headless mode
+      if (this.config.headless) {
+        launchArgs.push(
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--run-all-compositor-stages-before-draw'
+        );
+      }
+
+      this.browser = await chromium.launch({
+        headless: this.config.headless,
+        args: launchArgs
+      });
+
+      // Use a realistic Windows Chrome user agent (most common)
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+      this.context = await this.browser.newContext({
+        viewport: { width: 1366, height: 768 },
+        userAgent,
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+        extraHTTPHeaders,
+        // Performance: disable images, CSS, fonts if configured
+        // Note: This approach is less granular but very effective
+        ...(this.performanceConfig.blockImages && this.performanceConfig.blockCSS ? {
+          javaScriptEnabled: true, // Keep JS for functionality
+          // Block resources at context level for maximum performance
+        } : {})
+      });
+
+      this.page = await this.context.newPage();
     }
 
-    this.browser = await chromium.launch({
-      headless: this.config.headless,
-      args: launchArgs
-    });
-
-    // Use a realistic Windows Chrome user agent (most common)
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-    this.context = await this.browser.newContext({
-      viewport: { width: 1366, height: 768 },
-      userAgent,
-      locale: 'es-VE',
-      timezoneId: 'America/Caracas',
-      extraHTTPHeaders: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'es-VE,es-419;q=0.9,es;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
-      },
-      // Performance: disable images, CSS, fonts if configured
-      // Note: This approach is less granular but very effective
-      ...(this.performanceConfig.blockImages && this.performanceConfig.blockCSS ? {
-        javaScriptEnabled: true, // Keep JS for functionality
-        // Block resources at context level for maximum performance
-      } : {})
-    });
-
-    // STEALTH: Apply anti-bot detection measures to CONTEXT (affects all pages and iframes)
+    // STEALTH: Apply anti-bot detection measures to CONTEXT (affects all pages
+    // and iframes). Registered via addInitScript, so it applies on the next
+    // navigation in both freshly-launched and reused (remote) contexts.
     await this.applyStealthMeasures(this.context);
-    
-    this.page = await this.context.newPage();
-    
+
     // Setup request interception for fine-grained control
     await this.setupRequestInterception(this.page);
     
@@ -819,21 +845,29 @@ export abstract class BaseBankAuth<
       // Log blocked resources summary before closing
       this.logBlockedStatsSummary();
       
-      if (this.page) {
-        await this.page.close();
+      // For a remote (CDP-attached) browser the page and context belong to the
+      // remote session — closing them is a no-op at best and can throw. We only
+      // disconnect the browser, which ends the remote session (e.g. Browserbase).
+      if (!this.isRemoteBrowser) {
+        if (this.page) {
+          await this.page.close();
+          this.page = null;
+        }
+
+        if (this.context) {
+          await this.context.close();
+          this.context = null;
+        }
+      } else {
         this.page = null;
-      }
-      
-      if (this.context) {
-        await this.context.close();
         this.context = null;
       }
-      
+
       if (this.browser) {
         await this.browser.close();
         this.browser = null;
       }
-      
+
       this.isAuthenticated = false;
       this.log('🧹 Optimized browser resources cleaned up');
       this.log(`📄 Debug session log saved to: ${this.logFile}`);

@@ -25,7 +25,7 @@
  *
  * @example
  * ```typescript
- * import { createBncClient } from '@danicanod/banker-venezuela';
+ * import { createBncClient } from '@danicanod/banquer-connectors';
  *
  * const client = createBncClient({
  *   id: 'V12345678',

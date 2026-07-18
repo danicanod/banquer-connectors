@@ -19,6 +19,13 @@ export interface BaseBankAuthConfig {
   timeout?: number;        // Default: 30000ms
   debug?: boolean;         // Default: false
   saveSession?: boolean;   // Default: true
+  /**
+   * When set, connect to a remote browser over the Chrome DevTools Protocol
+   * (e.g. a Browserbase session's `connectUrl`) instead of launching a local
+   * Chromium. In this mode the remote session controls user-agent, locale,
+   * timezone and viewport — those `launch`/`newContext` options are ignored.
+   */
+  browserWSEndpoint?: string;
   // Performance optimization options
   performancePreset?: keyof typeof PERFORMANCE_PRESETS;
   performance?: {

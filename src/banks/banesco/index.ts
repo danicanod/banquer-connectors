@@ -7,7 +7,7 @@
  *
  * Recommended usage:
  * ```typescript
- * import { createBanescoClient } from '@danicanod/banker-venezuela/banesco';
+ * import { createBanescoClient } from '@danicanod/banquer-connectors/banesco';
  *
  * const client = createBanescoClient({
  *   username: 'V12345678',

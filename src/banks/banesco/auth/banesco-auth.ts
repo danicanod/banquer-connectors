@@ -47,7 +47,7 @@ export class BanescoAuth extends BaseBankAuth<
    * Get default configuration with Banesco-specific defaults
    */
   protected getDefaultConfig(config: BanescoAuthConfig): Required<BanescoAuthConfig> {
-    return {
+    const merged = {
       headless: false,
       timeout: 30000,
       debug: false,
@@ -56,6 +56,16 @@ export class BanescoAuth extends BaseBankAuth<
       loginRetryDelayMs: parseInt(process.env.BANESCO_LOGIN_RETRY_DELAY_MS || '5000', 10),
       ...config
     } as Required<BanescoAuthConfig>;
+
+    // In remote (CDP) mode the in-SDK retry cannot work: close() ends the
+    // remote session and a Browserbase connectUrl is single-use, so a reconnect
+    // would hit a dead endpoint. Creating a fresh session per attempt is the
+    // caller's responsibility.
+    if (merged.browserWSEndpoint) {
+      merged.loginRetries = 0;
+    }
+
+    return merged;
   }
 
   /**
@@ -258,6 +268,7 @@ export class BanescoAuth extends BaseBankAuth<
     ACTIVE_SESSION_WARNING: 'active_session_warning',
     SECURITY_QUESTIONS: 'security_questions',
     PASSWORD: 'password',
+    LOGIN_FORM: 'login_form',
   } as const;
 
   private async detectCurrentStep(frame: Frame): Promise<string> {
@@ -309,6 +320,24 @@ export class BanescoAuth extends BaseBankAuth<
       } catch { /* continue */ }
     }
 
+    // Check for login form (username field visible = we're back at login page)
+    // This must come BEFORE the loose text-based checks to avoid false positives
+    // (the login page contains "preguntas de seguridad" in help links)
+    const usernameSelectors = [
+      'input[id*="txtUsuario"]',
+      'input[id*="txtloginname"]',
+      '#ctl00_cp_ddpControles_txtloginname',
+    ];
+    for (const sel of usernameSelectors) {
+      try {
+        const el = await frame.$(sel);
+        if (el && await el.isVisible()) {
+          this.log('Detected login form (username field visible)');
+          return BanescoAuth.LOGIN_STEP.LOGIN_FORM;
+        }
+      } catch { /* continue */ }
+    }
+
     // Check page content for active session warning
     try {
       const content = await frame.content();
@@ -320,8 +349,12 @@ export class BanescoAuth extends BaseBankAuth<
       ) {
         return BanescoAuth.LOGIN_STEP.ACTIVE_SESSION_WARNING;
       }
-      // Also check for security question text in content
-      if (text.includes('pregunta') && text.includes('seguridad')) {
+      // Only match actual security questions page: must have answer input fields
+      // (not just the help text "¿Olvidó su ... preguntas de seguridad?")
+      if (
+        (text.includes('pregunta') && text.includes('seguridad')) &&
+        (text.includes('txtprimerar') || text.includes('txtsegundar') || text.includes('respuesta'))
+      ) {
         return BanescoAuth.LOGIN_STEP.SECURITY_QUESTIONS;
       }
     } catch { /* continue */ }
@@ -411,6 +444,14 @@ export class BanescoAuth extends BaseBankAuth<
         if (step === BanescoAuth.LOGIN_STEP.ACTIVE_SESSION_WARNING) {
           this.log('Active session warning detected, clicking Aceptar to continue...');
           await this.clickSubmitButton(currentFrame);
+          await this.page?.waitForTimeout(3000);
+          currentFrame = await this.getRefreshedFrame();
+          continue;
+        }
+
+        if (step === BanescoAuth.LOGIN_STEP.LOGIN_FORM) {
+          this.log('👤 Back at login form, re-entering username...');
+          await this.enterUsernameAndSubmit(currentFrame);
           await this.page?.waitForTimeout(3000);
           currentFrame = await this.getRefreshedFrame();
           continue;

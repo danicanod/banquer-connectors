@@ -1,7 +1,7 @@
 /**
  * Core Types
  *
- * Bank-agnostic domain types for the banker library.
+ * Bank-agnostic domain types for the banquer-connectors library.
  * These types define the canonical formats that all bank implementations should target.
  */
 

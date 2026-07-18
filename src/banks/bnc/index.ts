@@ -6,7 +6,7 @@
  *
  * Recommended usage:
  * ```typescript
- * import { createBncClient } from '@danicanod/banker-venezuela/bnc';
+ * import { createBncClient } from '@danicanod/banquer-connectors/bnc';
  *
  * const client = createBncClient({
  *   id: 'V12345678',
