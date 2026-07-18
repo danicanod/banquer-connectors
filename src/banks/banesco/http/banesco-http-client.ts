@@ -830,10 +830,20 @@ export class BanescoHttpClient {
           }).filter(o => o.value)
         : [];
 
+      // Order period options: prefer options that cover ~30 days, then wider ranges, then the rest
       const orderedPeriods = periodOptions.length
         ? [
-            ...periodOptions.filter(o => /semestre|trimestre|mes anterior|semana|día/i.test(o.text)),
-            ...periodOptions.filter(o => !/semestre|trimestre|mes anterior|semana|día/i.test(o.text)),
+            // First: options that explicitly mention "30 días", "últimos", or "mes actual"
+            ...periodOptions.filter(o => /30\s*d[ií]as?|\u00faltim|mes\s+actual/i.test(o.text)),
+            // Then: wider ranges that should include recent transactions
+            ...periodOptions.filter(o =>
+              /semestre|trimestre|mes anterior/i.test(o.text) &&
+              !/30\s*d[ií]as?|\u00faltim|mes\s+actual/i.test(o.text)
+            ),
+            // Finally: everything else not already included
+            ...periodOptions.filter(o =>
+              !/30\s*d[ií]as?|\u00faltim|mes\s+actual|semestre|trimestre|mes anterior/i.test(o.text)
+            ),
           ]
         : [{ value: 'PeriodoMes', text: 'PeriodoMes', selected: true }];
 
@@ -853,7 +863,7 @@ export class BanescoHttpClient {
       const toField = $toInput.length ? (($toInput.attr('name') || $toInput.attr('id') || '').trim()) : '';
 
       const today = new Date();
-      const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const thirtyDaysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30);
       const formatDate = (d: Date) =>
         `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 
@@ -883,17 +893,17 @@ export class BanescoHttpClient {
         formData[tipoConsultaKey] = useDateRangeMode ? 'rdbRango' : 'rdbPeriodo';
       }
 
-      // When using date range mode, submit once with current-month range.
+      // When using date range mode, submit once with last-30-days range.
       // When using period mode, try multiple period options until we get results.
       if (useDateRangeMode) {
-        // Use current month range (matches browser behavior)
-        formData[fromField] = formatDate(firstOfMonth);
+        // Use last 30 days range to ensure we always cover recent transactions
+        formData[fromField] = formatDate(thirtyDaysAgo);
         formData[toField] = formatDate(today);
 
         // "Click" consult
         if (consultField) formData[consultField] = consultValue;
 
-        this.log(`   📤 Posting movements form (rdbRango: ${formatDate(firstOfMonth)} - ${formatDate(today)})`);
+        this.log(`   📤 Posting movements form (rdbRango: ${formatDate(thirtyDaysAgo)} - ${formatDate(today)})`);
         const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
 
         // Handle redirect if needed
@@ -917,7 +927,7 @@ export class BanescoHttpClient {
 
         // Set partial date fields if only one exists (rare fallback path)
         if (fromField) {
-          attemptForm[fromField] = formatDate(firstOfMonth);
+          attemptForm[fromField] = formatDate(thirtyDaysAgo);
         }
         if (toField) {
           attemptForm[toField] = formatDate(today);
