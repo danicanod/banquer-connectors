@@ -8,7 +8,7 @@
 /**
  * Supported bank codes
  */
-export type BankCode = 'banesco' | 'bnc' | string;
+export type BankCode = 'banesco' | 'bnc' | 'facebank' | string;
 
 /**
  * Transaction type - debit or credit

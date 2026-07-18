@@ -1,7 +1,7 @@
 {
   "name": "@danicanod/banquer-connectors",
   "version": "3.1.0",
-  "description": "TypeScript library for connecting to Venezuelan bank accounts (Banesco & BNC). Hybrid Playwright/HTTP architecture for reliability and speed.",
+  "description": "TypeScript library for connecting to Venezuelan bank accounts (Banesco, BNC & Facebank). Hybrid Playwright/HTTP architecture for reliability and speed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -17,6 +17,10 @@
     "./bnc": {
       "types": "./dist/banks/bnc/index.d.ts",
       "import": "./dist/banks/bnc/index.js"
+    },
+    "./facebank": {
+      "types": "./dist/banks/facebank/index.d.ts",
+      "import": "./dist/banks/facebank/index.js"
     },
     "./core": {
       "types": "./dist/core/index.d.ts",
@@ -34,6 +38,7 @@
     "example:banesco": "tsx src/banks/banesco/examples/basic-usage.ts",
     "example:banesco-hybrid": "tsx src/banks/banesco/examples/hybrid-usage.ts",
     "example:bnc": "tsx src/banks/bnc/examples/http-usage.ts",
+    "example:facebank": "tsx src/banks/facebank/examples/basic-usage.ts",
     "postinstall": "npx playwright install chromium"
   },
   "keywords": [
@@ -41,6 +46,7 @@
     "banking",
     "banesco",
     "bnc",
+    "facebank",
     "scraping",
     "automation",
     "playwright",

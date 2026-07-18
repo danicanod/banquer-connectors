@@ -18,6 +18,9 @@ export {
 } from './utils/http-client.js';
 export type { HttpClientConfig, RequestOptions, FormPostResult } from './utils/http-client.js';
 
+// Interactive input utilities (e.g. OTP prompts for interactive/CLI flows)
+export { promptForInput } from './utils/interactive.js';
+
 // Base types
 export type {
   BaseBankAuthConfig,
