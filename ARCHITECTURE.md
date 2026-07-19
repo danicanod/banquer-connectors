@@ -63,6 +63,9 @@ The library exposes:
    - `types/index.ts` - Bank-specific types
    - `http/` or `auth/` - Implementation details
 
-2. Use `core/transactions` for normalization
+2. Return the bank's own result shape from the client (accounts / movements).
+   Normalization to the canonical `Transaction` model is **caller-side** — the
+   clients do not normalize their own output. Consumers convert raw rows via
+   `normalizeTransactions('<bank>', rows)` from `core/`.
 
 3. Export from `src/index.ts` and add to `package.json` exports

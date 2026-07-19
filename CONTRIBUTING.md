@@ -1,7 +1,7 @@
 # Contributing to Banquer Connectors
 
 Thanks for your interest in contributing! This library connects to Venezuelan
-bank accounts (Banesco, BNC) from TypeScript.
+and Puerto Rican bank accounts (Banesco, BNC & Facebank) from TypeScript.
 
 ## Getting started
 
@@ -12,9 +12,10 @@ pnpm run lint
 pnpm run build
 ```
 
-> Prerequisites: Node.js >= 18, pnpm >= 8. Playwright's Chromium is installed via
-> `postinstall` (required for Banesco login). To skip it during development, run
-> `pnpm install --ignore-scripts`.
+> Prerequisites: Node.js >= 18, pnpm >= 8. The browser-driven banks (Banesco,
+> Facebank) need Playwright's Chromium, which is **not** installed automatically.
+> Install it once with `pnpm run install:browser` (or `npx playwright install
+> chromium`). BNC is pure HTTP and needs no browser.
 
 ## Workflow
 
@@ -35,9 +36,12 @@ rules. In short:
 - `banks/<bank>/` — bank-specific auth + scraping. May import `core/*` and
   `shared/*`, never another bank.
 
-To add a new bank, create `src/banks/<bank>/` with a client facade + types, reuse
-`core/transactions` for normalization, and export it from `src/index.ts` and the
-`package.json` `exports` map.
+To add a new bank, create `src/banks/<bank>/` with a client facade + types that
+returns the bank's own result shape, and export it from `src/index.ts` and the
+`package.json` `exports` map. Normalization to the canonical `Transaction` model
+is **caller-side**: expose your raw rows and let consumers call
+`normalizeTransactions('<bank>', rows)` from `core/` (the clients don't normalize
+for you).
 
 ## Code style
 

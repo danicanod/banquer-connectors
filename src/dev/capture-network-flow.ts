@@ -13,7 +13,7 @@
 
 import 'dotenv/config';
 import { chromium, Browser, Page, BrowserContext, ElementHandle } from 'playwright';
-import { NetworkLogger } from '../shared/utils/network-logger.js';
+import { NetworkLogger } from './network-logger.js';
 
 // ============================================================================
 // Configuration
