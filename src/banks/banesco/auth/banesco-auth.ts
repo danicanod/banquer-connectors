@@ -14,16 +14,15 @@ import {
   BanescoAuthConfig,
   BANESCO_URLS
 } from '../types/index.js';
+import {
+  verifyLoginSuccess as verifyBanescoLogin,
+  checkForBanescoErrorPage as checkBanescoErrorPage,
+  type BanescoErrorDetails,
+} from './login-verifier.js';
 
-/**
- * Banesco error page details extracted from error.aspx
- */
-export interface BanescoErrorDetails {
-  message: string;
-  errorCode: string | null;
-  server: string | null;
-  isTransientOutage: boolean;
-}
+// Re-exported for back-compat; the type and the verification logic now live in
+// ./login-verifier.
+export type { BanescoErrorDetails };
 
 /** The distinct screens the Banesco login flow can be on (see `LOGIN_STEP`). */
 type LoginStep =
@@ -64,6 +63,7 @@ export class BanescoAuth extends BaseBankAuth<
       timeout: 30000,
       debug: false,
       saveSession: true,
+      pauseOnDebug: true,
       loginRetries: parseInt(process.env.BANESCO_LOGIN_RETRIES || '0', 10),
       loginRetryDelayMs: parseInt(process.env.BANESCO_LOGIN_RETRY_DELAY_MS || '5000', 10),
       ...config
@@ -149,6 +149,38 @@ export class BanescoAuth extends BaseBankAuth<
   }
 
   /**
+   * Banesco form POSTs are rejected by the WAF unless they carry a real
+   * browser's Origin / Sec-Fetch-* headers. Playwright omits Origin on some
+   * intercepted POSTs, so we add the missing ones here (merged, never replacing
+   * the header object, so cookies survive). Only applies to banesconline.com.
+   */
+  protected getExtraRequestHeaders(
+    url: string,
+    method: string,
+    existingHeaders: Record<string, string>,
+  ): Record<string, string> {
+    if (method !== 'POST' || !url.includes('banesconline.com')) return {};
+
+    const additionalHeaders: Record<string, string> = {};
+    this.log(`INTERCEPTED POST: ${url.substring(0, 60)}...`);
+    this.log(`   Existing Origin: ${existingHeaders['origin'] || 'NONE'}`);
+
+    if (!existingHeaders['origin']) {
+      additionalHeaders['origin'] = 'https://www.banesconline.com';
+      this.log(`   Adding Origin: https://www.banesconline.com`);
+    }
+    // Also ensure Sec-Fetch headers are present (modern Chrome sends these)
+    if (!existingHeaders['sec-fetch-site']) {
+      additionalHeaders['sec-fetch-site'] = 'same-origin';
+      additionalHeaders['sec-fetch-mode'] = 'navigate';
+      additionalHeaders['sec-fetch-dest'] = 'document';
+      this.log(`   Adding Sec-Fetch headers`);
+    }
+
+    return additionalHeaders;
+  }
+
+  /**
    * Perform Banesco-specific login with iframe handling
    */
   protected async performBankSpecificLogin(): Promise<boolean> {
@@ -165,10 +197,13 @@ export class BanescoAuth extends BaseBankAuth<
 
       // Perform the login process within the iframe
       const loginSuccess = await this.performLogin(frame);
-      
+
       if (loginSuccess) {
-        const verified = await this.verifyLoginSuccess();
-        
+        if (!this.page) throw new Error('Browser page not initialized');
+        const verification = await verifyBanescoLogin(this.page, (m) => this.log(m));
+        this.lastBanescoError = verification.error;
+        const verified = verification.success;
+
         if (!verified) {
           // Check if we have a specific Banesco error to report
           const banescoError = this.getLastBanescoError();
@@ -188,7 +223,9 @@ export class BanescoAuth extends BaseBankAuth<
       }
       
       // Login process itself failed - check for Banesco error page
-      const banescoError = await this.checkForBanescoErrorPage();
+      const banescoError = this.page
+        ? await checkBanescoErrorPage(this.page, (m) => this.log(m))
+        : null;
       if (banescoError) {
         this.lastBanescoError = banescoError;
         const errorInfo = banescoError.errorCode 
@@ -637,301 +674,6 @@ export class BanescoAuth extends BaseBankAuth<
     }
     
     throw new Error('Submit button not found');
-  }
-
-  /**
-   * Check the login iframe for Banesco's error page (error.aspx).
-   * Returns error details if found, null otherwise.
-   * 
-   * The error page contains:
-   * - lblMensaje: The error message (e.g., "En estos momentos no podemos procesar su operación...")
-   * - lblCodigoError: Error code (e.g., "GUEG001")
-   * - server: Server identifier (e.g., "SWEB0069")
-   */
-  private async checkForBanescoErrorPage(): Promise<BanescoErrorDetails | null> {
-    if (!this.page) return null;
-
-    try {
-      // Get the login iframe
-      const iframeElement = await this.page.$(BANESCO_URLS.IFRAME_SELECTOR);
-      if (!iframeElement) return null;
-
-      const frame = await iframeElement.contentFrame();
-      if (!frame) return null;
-
-      const frameContent = await frame.content();
-
-      // Check for error page markers
-      const hasErrorMessage = frameContent.includes('lblMensaje');
-      const hasErrorCode = frameContent.includes('lblCodigoError');
-      
-      if (!hasErrorMessage && !hasErrorCode) {
-        return null;
-      }
-
-      // Extract error details
-      let message = '';
-      let errorCode: string | null = null;
-      let server: string | null = null;
-
-      // Extract message from lblMensaje
-      try {
-        const msgElement = await frame.$('#lblMensaje');
-        if (msgElement) {
-          message = (await msgElement.textContent())?.trim() || '';
-        }
-      } catch { /* ignore */ }
-
-      // Extract error code from lblCodigoError
-      try {
-        const codeElement = await frame.$('#lblCodigoError');
-        if (codeElement) {
-          errorCode = (await codeElement.textContent())?.trim() || null;
-        }
-      } catch { /* ignore */ }
-
-      // Extract server from #server element
-      try {
-        const serverElement = await frame.$('#server');
-        if (serverElement) {
-          server = (await serverElement.textContent())?.trim() || null;
-        }
-      } catch { /* ignore */ }
-
-      // If we found at least a message, this is an error page
-      if (message || errorCode) {
-        // Determine if this is a transient outage (should retry later)
-        const isTransientOutage = 
-          message.toLowerCase().includes('intente más tarde') ||
-          message.toLowerCase().includes('intente mas tarde') ||
-          message.toLowerCase().includes('no podemos procesar') ||
-          (errorCode?.startsWith('GU') || false); // GUEG001-style codes are often transient
-
-        return {
-          message: message || 'Unknown Banesco error',
-          errorCode,
-          server,
-          isTransientOutage
-        };
-      }
-
-      return null;
-    } catch (error) {
-      this.log(`Error checking for Banesco error page: ${error}`);
-      return null;
-    }
-  }
-
-  /**
-   * Check if the page shows authenticated chrome (logout link, etc.)
-   * This helps detect successful login even if URL remains on login.aspx
-   */
-  private async checkForAuthenticatedUi(): Promise<boolean> {
-    if (!this.page) return false;
-
-    try {
-      const pageContent = await this.page.content();
-      
-      // Check for logout link presence (authenticated indicator)
-      const hasLogoutLink = 
-        pageContent.includes('salir.aspx') ||
-        pageContent.includes('ctl00_btnSalir_lkButton') ||
-        pageContent.includes('icon-salida');
-
-      if (hasLogoutLink) {
-        this.log('Found authenticated chrome (logout link)');
-        return true;
-      }
-
-      // Also check iframe content for authenticated indicators
-      const iframeElement = await this.page.$(BANESCO_URLS.IFRAME_SELECTOR);
-      if (iframeElement) {
-        const frame = await iframeElement.contentFrame();
-        if (frame) {
-          const frameContent = await frame.content();
-          if (frameContent.includes('salir.aspx') || 
-              frameContent.includes('Cerrar Sesión') ||
-              frameContent.includes('Bienvenido')) {
-            this.log('Found authenticated indicators in iframe');
-            return true;
-          }
-        }
-      }
-
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Verify if login was successful using Banesco-specific indicators
-   */
-  protected async verifyLoginSuccess(): Promise<boolean> {
-    if (!this.page) return false;
-
-    // Reset any previous error
-    this.lastBanescoError = null;
-
-    try {
-      this.log('Verifying login success...');
-      
-      // Poll for URL change (up to 15 seconds)
-      const MAX_WAIT_MS = 15000;
-      const POLL_INTERVAL_MS = 500;
-      let elapsed = 0;
-      
-      while (elapsed < MAX_WAIT_MS) {
-        await this.page.waitForTimeout(POLL_INTERVAL_MS);
-        elapsed += POLL_INTERVAL_MS;
-        
-        const currentUrl = this.page.url().toLowerCase();
-        
-        // Check if we've navigated away from login page
-        if (currentUrl.includes('default.aspx') || 
-            currentUrl.includes('principal.aspx') ||
-            currentUrl.includes('index.aspx')) {
-          this.log(`Current URL: ${this.page.url()}`);
-          this.log('Login verification successful by URL pattern');
-          return true;
-        }
-
-        // Check for authenticated chrome (logout link) early
-        if (await this.checkForAuthenticatedUi()) {
-          this.log(`Current URL: ${this.page.url()}`);
-          return true;
-        }
-
-        // Check for Banesco error page in iframe (fail fast on outage)
-        const errorDetails = await this.checkForBanescoErrorPage();
-        if (errorDetails) {
-          this.lastBanescoError = errorDetails;
-          const errorInfo = errorDetails.errorCode 
-            ? `${errorDetails.errorCode}${errorDetails.server ? ' / ' + errorDetails.server : ''}`
-            : 'unknown';
-          this.log(`Banesco error page detected (${errorInfo}): ${errorDetails.message}`);
-          return false;
-        }
-      }
-      
-      const currentUrl = this.page.url();
-      this.log(`Current URL: ${currentUrl}`);
-
-      // Final check for Banesco error page before trying navigation
-      const errorBeforeNav = await this.checkForBanescoErrorPage();
-      if (errorBeforeNav) {
-        this.lastBanescoError = errorBeforeNav;
-        const errorInfo = errorBeforeNav.errorCode 
-          ? `${errorBeforeNav.errorCode}${errorBeforeNav.server ? ' / ' + errorBeforeNav.server : ''}`
-          : 'unknown';
-        this.log(`Banesco error page detected (${errorInfo}): ${errorBeforeNav.message}`);
-        return false;
-      }
-      
-      // Still on login page - try to navigate to dashboard explicitly
-      const urlLower = currentUrl.toLowerCase();
-      if (urlLower.includes('login.aspx')) {
-        this.log('Still on login page, trying explicit navigation to dashboard...');
-        
-        try {
-          await this.page.goto(BANESCO_URLS.DASHBOARD, {
-            waitUntil: 'domcontentloaded',
-            timeout: 10000
-          });
-          await this.page.waitForTimeout(2000);
-          
-          const newUrl = this.page.url().toLowerCase();
-          if (newUrl.includes('default.aspx') && !newUrl.includes('login')) {
-            this.log('Login verified - navigated to dashboard successfully');
-            return true;
-          }
-          
-          // If we got redirected back to login, check for error page again
-          if (newUrl.includes('login.aspx')) {
-            const errorAfterNav = await this.checkForBanescoErrorPage();
-            if (errorAfterNav) {
-              this.lastBanescoError = errorAfterNav;
-              const errorInfo = errorAfterNav.errorCode 
-                ? `${errorAfterNav.errorCode}${errorAfterNav.server ? ' / ' + errorAfterNav.server : ''}`
-                : 'unknown';
-              this.log(`Banesco unavailable (${errorInfo}): ${errorAfterNav.message}`);
-              return false;
-            }
-            this.log('Login failed - redirected back to login page');
-            return false;
-          }
-        } catch (navError) {
-          this.log(`Navigation error: ${navError}`);
-        }
-      }
-      
-      // Check page content for authenticated indicators
-      try {
-        const pageContent = await this.page.content();
-        const authenticatedIndicators = [
-          'Cerrar Sesión',
-          'cerrar sesion',
-          'Bienvenido',
-          'Mi cuenta',
-          'Saldo disponible',
-          'Consulta de saldos',
-          'Cuenta Corriente',
-          'Cuenta de Ahorro'
-        ];
-        
-        for (const indicator of authenticatedIndicators) {
-          if (pageContent.toLowerCase().includes(indicator.toLowerCase())) {
-            this.log(`Login verified by content indicator: "${indicator}"`);
-            return true;
-          }
-        }
-      } catch {
-        // Continue with other checks
-      }
-      
-      // Check for system availability iframe (Banesco-specific)
-      try {
-        const systemIframe = await this.page.$('#ctl00_cp_frmCAU');
-        if (systemIframe) {
-          const systemFrame = await systemIframe.contentFrame();
-          if (systemFrame) {
-            const systemStatus = await systemFrame.$('.StatusSystemOK, .available');
-            if (systemStatus) {
-              this.log('Login verified by system status iframe');
-              return true;
-            }
-          }
-        }
-      } catch {
-        // Continue with other checks
-      }
-      
-      // Final check - if we're still on login page, authentication failed
-      const finalUrl = this.page.url().toLowerCase();
-      if (finalUrl.includes('login.aspx')) {
-        // One last check for error page
-        const finalError = await this.checkForBanescoErrorPage();
-        if (finalError) {
-          this.lastBanescoError = finalError;
-          const errorInfo = finalError.errorCode 
-            ? `${finalError.errorCode}${finalError.server ? ' / ' + finalError.server : ''}`
-            : 'unknown';
-          this.log(`Banesco unavailable (${errorInfo}): ${finalError.message}`);
-        } else {
-          this.log('Login verification failed - still on login page');
-          this.log(`   URL: ${this.page.url()}`);
-        }
-        return false;
-      }
-      
-      // We're not on login page, consider it a success
-      this.log('Login appears successful - no longer on login page');
-      return true;
-      
-    } catch (error) {
-      this.log(`Error during login verification: ${error}`);
-      return false;
-    }
   }
 
   /**
