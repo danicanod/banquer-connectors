@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 If you discover a security vulnerability in `@danicanod/banquer-connectors`,
-please report it **privately** by emailing **danicanod@gmail.com**. Do not open a
+please report it **privately** by emailing **danicanod@icloud.com**. Do not open a
 public GitHub issue for security problems.
 
 Please include:
