@@ -75,16 +75,12 @@ export default tseslint.config(
   {
     // Allow console in logger utilities, auth flows, examples, and client files
     files: [
-      '**/strategic-logger.ts',
       '**/network-logger.ts',
+      '**/debug-logger.ts',
       '**/base-bank-auth.ts',
       '**/security-questions.ts',
       '**/banesco-auth.ts',
-      '**/helpers.ts',
       '**/http-client.ts',
-      '**/browser.ts',
-      '**/html-saver.ts',
-      '**/session-manager.ts',
       '**/examples/**',
       '**/*-http-client.ts',
       '**/client.ts',

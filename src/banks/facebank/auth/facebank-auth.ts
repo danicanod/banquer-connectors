@@ -41,32 +41,18 @@ export class FacebankAuth extends BaseBankAuth<
   }
 
   /**
-   * The base class forces a fixed set of navigation headers (Accept, Sec-Fetch-*,
-   * sec-ch-ua, ...) onto EVERY request via `extraHTTPHeaders`. That breaks
-   * Facebank: the COBIS SPA fetches its Angular templates (which render the login
-   * form) over XHR, and those requests then carry `Sec-Fetch-Site: none` /
-   * `Sec-Fetch-Mode: navigate` instead of `same-origin`, so the server rejects
-   * them and the page stays blank. Clearing the extra headers after the base sets
-   * them lets Chromium emit correct per-request headers — matching the recon flow
-   * that rendered and logged in cleanly.
+   * The base applies a fixed set of navigation headers (Accept, Sec-Fetch-*,
+   * sec-ch-ua, ...) to the browser context. Those break Facebank: the COBIS SPA
+   * fetches its Angular templates (which render the login form) over XHR, and
+   * those requests would then carry `Sec-Fetch-Site: none` / `Sec-Fetch-Mode:
+   * navigate` instead of `same-origin`, so the server rejects them and the page
+   * stays blank. Returning no extra headers lets Chromium emit correct
+   * per-request values — matching the recon flow that rendered and logged in
+   * cleanly. (See also `pauseOnDebug: false`: Facebank login is attended, so the
+   * base's Playwright-Inspector pause on debug is disabled rather than overridden.)
    */
-  protected async initializeBrowser(): Promise<void> {
-    await super.initializeBrowser();
-    if (this.context) {
-      await this.context.setExtraHTTPHeaders({});
-    }
-  }
-
-  /**
-   * The base class halts the flow with the Playwright Inspector (`page.pause()`)
-   * at each checkpoint when `debug` is on. That's disruptive for Facebank, whose
-   * login is attended (you're entering an OTP in the browser). Keep the debug
-   * message as a log line but never pause.
-   */
-  protected async debugPause(message: string): Promise<void> {
-    if (this.config.debug) {
-      this.log(`(debug) ${message}`);
-    }
+  protected getNavigationHeaders(): Record<string, string> {
+    return {};
   }
 
   protected getDefaultConfig(config: FacebankAuthConfig): Required<FacebankAuthConfig> {
@@ -75,6 +61,7 @@ export class FacebankAuth extends BaseBankAuth<
       timeout: 45000,
       debug: false,
       saveSession: true,
+      pauseOnDebug: false, // attended login — log debug checkpoints, don't halt
       manualOtp: false,
       manualImageFallback: true,
       ...config,

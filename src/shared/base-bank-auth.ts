@@ -35,28 +35,20 @@
 
 import { Browser, Page, Frame, chromium, BrowserContext } from 'playwright';
 import type { BaseBankAuthConfig, BaseBankLoginResult, BaseBankCredentials } from './types/index.js';
-import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'fs';
-import { 
-  PerformanceConfig, 
-  getBankPerformanceConfig, 
-  getBlockedDomains, 
+import {
+  PerformanceConfig,
+  getBankPerformanceConfig,
+  getBlockedDomains,
   isEssentialJS
 } from './performance-config.js';
-
-/**
- * Aggregated blocked request statistics (to avoid per-request log spam)
- */
-interface BlockedRequestStats {
-  total: number;
-  byCategory: {
-    tracking: number;
-    css: number;
-    image: number;
-    font: number;
-    media: number;
-    nonEssentialJs: number;
-  };
-}
+import { DebugFileLogger } from './utils/debug-logger.js';
+import { BlockedRequestTracker } from './utils/blocked-request-tracker.js';
+import { applyStealthMeasures as applyStealthInitScript } from './utils/browser-factory.js';
+import {
+  waitForElementReady as pageWaitForElementReady,
+  waitForElementReadyOnFrame as frameWaitForElementReady,
+  waitForNavigation as pageWaitForNavigation,
+} from './utils/page-waits.js';
 
 export abstract class BaseBankAuth<
   TCredentials extends BaseBankCredentials,
@@ -74,10 +66,11 @@ export abstract class BaseBankAuth<
   protected logFile: string;
   protected bankName: string;
   protected performanceConfig: PerformanceConfig;
-  
+
+  /** File-backed debug logger (silent unless `debug` is enabled). */
+  private debugLogger!: DebugFileLogger;
   /** Aggregated blocked request stats (summary logged once on close) */
-  private blockedStats: BlockedRequestStats = this.createEmptyBlockedStats();
-  private blockedStatsSummaryLogged: boolean = false;
+  private blockedTracker = new BlockedRequestTracker();
 
   constructor(bankName: string, credentials: TCredentials, config: TConfig) {
     this.bankName = bankName;
@@ -105,7 +98,8 @@ export abstract class BaseBankAuth<
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const userIdentifier = this.getUserIdentifier();
     this.logFile = `debug-${bankName.toLowerCase()}-${userIdentifier}-${timestamp}.log`;
-    
+    this.debugLogger = new DebugFileLogger(this.logFile, !!this.config.debug);
+
     this.log(`${bankName} Auth initialized for user: ${this.getUserIdentifier()}***`);
     this.log(`Performance config: CSS:${this.performanceConfig.blockCSS}, IMG:${this.performanceConfig.blockImages}, JS:${this.performanceConfig.blockNonEssentialJS}`);
     
@@ -124,8 +118,47 @@ export abstract class BaseBankAuth<
       timeout: 30000,
       debug: false,
       saveSession: true,
+      pauseOnDebug: true,
       ...config
     } as Required<TConfig>;
+  }
+
+  /**
+   * Extra HTTP headers applied to the browser context for navigation requests.
+   * The default set mimics a real Chrome navigation. Subclasses whose site is a
+   * client-rendered SPA (whose XHR template fetches must NOT inherit these fixed
+   * `Sec-Fetch-*` values) can override this to return `{}`.
+   */
+  protected getNavigationHeaders(): Record<string, string> {
+    return {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'es-VE,es-419;q=0.9,es;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"'
+    };
+  }
+
+  /**
+   * Per-request header overrides applied during request interception. Called for
+   * every request; return a map of headers to ADD (merged over the existing
+   * ones), or an empty object to leave the request untouched. The default adds
+   * nothing — bank subclasses override this for site-specific needs (e.g. an
+   * `Origin`/`Sec-Fetch` fixup on form POSTs) so the base stays bank-agnostic.
+   */
+  protected getExtraRequestHeaders(
+    _url: string,
+    _method: string,
+    _existingHeaders: Record<string, string>,
+  ): Record<string, string> {
+    return {};
   }
 
   /**
@@ -147,73 +180,12 @@ export abstract class BaseBankAuth<
   protected abstract performBankSpecificLogin(): Promise<boolean>;
 
   /**
-   * Log a diagnostic message. Silent unless the consumer opted into `debug`.
-   *
-   * This gating matters for a published library: without it, every login would
-   * spam the consumer's stdout AND write a `debug-<bank>-<user>-<ts>.log` file
-   * into their working directory as a side effect. Both only happen in debug mode.
+   * Log a diagnostic message. Silent unless the consumer opted into `debug`
+   * (see {@link DebugFileLogger}); in debug mode it also appends to a per-session
+   * log file. Kept `protected` so subclasses can log through the same channel.
    */
   protected log(message: string): void {
-    if (!this.config.debug) return;
-
-    console.log(message);
-
-    const logEntry = `[${new Date().toISOString()}] ${message}`;
-    try {
-      appendFileSync(this.logFile, logEntry + '\n');
-    } catch (error) {
-      // Fallback if file writing fails
-      console.warn('Failed to write to log file:', error);
-    }
-  }
-
-  /**
-   * Create empty blocked request statistics object
-   */
-  private createEmptyBlockedStats(): BlockedRequestStats {
-    return {
-      total: 0,
-      byCategory: {
-        tracking: 0,
-        css: 0,
-        image: 0,
-        font: 0,
-        media: 0,
-        nonEssentialJs: 0
-      }
-    };
-  }
-
-  /**
-   * Reset blocked request statistics (called when initializing new browser)
-   */
-  private resetBlockedStats(): void {
-    this.blockedStats = this.createEmptyBlockedStats();
-    this.blockedStatsSummaryLogged = false;
-  }
-
-  /**
-   * Log the blocked requests summary (called once on close)
-   */
-  private logBlockedStatsSummary(): void {
-    if (this.blockedStatsSummaryLogged || this.blockedStats.total === 0) {
-      return;
-    }
-    
-    this.blockedStatsSummaryLogged = true;
-    
-    const { total, byCategory } = this.blockedStats;
-    const parts: string[] = [];
-    
-    if (byCategory.tracking > 0) parts.push(`tracking=${byCategory.tracking}`);
-    if (byCategory.css > 0) parts.push(`css=${byCategory.css}`);
-    if (byCategory.image > 0) parts.push(`image=${byCategory.image}`);
-    if (byCategory.font > 0) parts.push(`font=${byCategory.font}`);
-    if (byCategory.media > 0) parts.push(`media=${byCategory.media}`);
-    if (byCategory.nonEssentialJs > 0) parts.push(`js=${byCategory.nonEssentialJs}`);
-    
-    const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-    this.log(`Blocked resources: ${total}${breakdown}`);
+    this.debugLogger.log(message);
   }
 
   /**
@@ -221,8 +193,11 @@ export abstract class BaseBankAuth<
    * Only pauses if debug mode is enabled
    */
   protected async debugPause(message: string): Promise<void> {
-    if (this.config.debug && this.page) {
-      this.log(`DEBUG PAUSE: ${message}`);
+    if (!this.config.debug) return;
+    this.log(`DEBUG PAUSE: ${message}`);
+    // Attended flows (e.g. Facebank's interactive OTP) set pauseOnDebug=false to
+    // keep the checkpoint log without halting on the Playwright Inspector.
+    if (this.config.pauseOnDebug && this.page) {
       this.log('Use Playwright Inspector to debug. Continue execution when ready.');
       await this.page.pause();
     }
@@ -233,55 +208,14 @@ export abstract class BaseBankAuth<
    */
   protected async waitForElementReady(selector: string, timeout: number = 10000): Promise<boolean> {
     if (!this.page) return false;
-    
-    try {
-      // Wait for element to exist
-      await this.page.waitForSelector(selector, { timeout });
-      
-      // Wait for element to be visible and enabled
-      await this.page.waitForFunction(
-        (sel) => {
-          const element = document.querySelector(sel) as HTMLElement;
-          return element && 
-                 element.offsetParent !== null && // visible
-                 !element.hasAttribute('disabled'); // enabled
-        },
-        selector,
-        { timeout }
-      );
-      
-      return true;
-    } catch (error) {
-      this.log(` Element not ready: ${selector} - ${error}`);
-      return false;
-    }
+    return pageWaitForElementReady(this.page, selector, timeout, (m) => this.log(m));
   }
 
   /**
    * Wait for element to be ready (visible and enabled) on frame
    */
   protected async waitForElementReadyOnFrame(frame: Frame, selector: string, timeout: number = 10000): Promise<boolean> {
-    try {
-      // Wait for element to exist
-      await frame.waitForSelector(selector, { timeout });
-      
-      // Wait for element to be visible and enabled
-      await frame.waitForFunction(
-        (sel) => {
-          const element = document.querySelector(sel) as HTMLElement;
-          return element && 
-                 element.offsetParent !== null && // visible
-                 !element.hasAttribute('disabled'); // enabled
-        },
-        selector,
-        { timeout }
-      );
-      
-      return true;
-    } catch (error) {
-      this.log(` Element not ready on frame: ${selector} - ${error}`);
-      return false;
-    }
+    return frameWaitForElementReady(frame, selector, timeout, (m) => this.log(m));
   }
 
   /**
@@ -289,56 +223,7 @@ export abstract class BaseBankAuth<
    */
   protected async waitForNavigation(expectedSelectors: string[] = [], timeout: number = 15000): Promise<boolean> {
     if (!this.page) return false;
-    
-    try {
-      this.log('Waiting for navigation to complete...');
-      
-      // First try immediate check - maybe elements are already there
-      for (const selector of expectedSelectors) {
-        try {
-          const element = await this.page.$(selector);
-          if (element && await element.isVisible()) {
-            this.log(`Navigation detected: found ${selector} immediately`);
-            return true;
-          }
-        } catch {
-          // Continue checking
-        }
-      }
-      
-      // If not immediate, wait for any of the expected selectors to appear
-      if (expectedSelectors.length > 0) {
-        this.log(`Waiting for any of: ${expectedSelectors.join(', ')}`);
-        
-        try {
-          await Promise.race(
-            expectedSelectors.map(selector => 
-              this.page!.waitForSelector(selector, { timeout })
-            )
-          );
-          this.log('Navigation detected: new content appeared');
-          return true;
-        } catch (raceError) {
-          this.log(` None of expected elements appeared: ${raceError}`);
-        }
-      }
-      
-      // Fallback: wait for load state change
-      try {
-        await this.page.waitForLoadState('networkidle', { timeout: 5000 });
-        this.log('Navigation completed: network idle');
-        return true;
-      } catch (loadError) {
-        this.log(` Load state timeout: ${loadError}`);
-      }
-      
-      this.log('Navigation assumed successful - continuing');
-      return true;
-      
-    } catch (error) {
-      this.log(` Navigation timeout: ${error}`);
-      return false;
-    }
+    return pageWaitForNavigation(this.page, expectedSelectors, timeout, (m) => this.log(m));
   }
 
   /**
@@ -355,82 +240,54 @@ export abstract class BaseBankAuth<
       const url = request.url();
       const resourceType = request.resourceType();
       const method = request.method();
-      
-      // For POST requests to Banesco, add Origin header if missing
-      // Real browsers always send Origin on form submissions
-      // NOTE: We only ADD headers, don't replace the entire headers object to preserve cookies
-      if (method === 'POST' && url.includes('banesconline.com')) {
-        const existingHeaders = request.headers();
-        const additionalHeaders: Record<string, string> = {};
-        
-        // Log POST interception
-        this.log(`INTERCEPTED POST: ${url.substring(0, 60)}...`);
-        this.log(`   Existing Origin: ${existingHeaders['origin'] || 'NONE'}`);
-        
-        if (!existingHeaders['origin']) {
-          additionalHeaders['origin'] = 'https://www.banesconline.com';
-          this.log(`   Adding Origin: https://www.banesconline.com`);
-        }
-        // Also ensure Sec-Fetch headers are present (modern Chrome sends these)
-        if (!existingHeaders['sec-fetch-site']) {
-          additionalHeaders['sec-fetch-site'] = 'same-origin';
-          additionalHeaders['sec-fetch-mode'] = 'navigate';
-          additionalHeaders['sec-fetch-dest'] = 'document';
-          this.log(`   Adding Sec-Fetch headers`);
-        }
-        
-        // Only modify if we have additional headers to add
-        if (Object.keys(additionalHeaders).length > 0) {
-          this.log(`   Continuing with modified headers`);
-          await route.continue({ headers: { ...existingHeaders, ...additionalHeaders } });
-          return;
-        }
+
+      // Allow bank subclasses to inject site-specific headers (e.g. an
+      // Origin/Sec-Fetch fixup on form POSTs). We only ADD headers, never
+      // replace the whole object, so cookies are preserved. Default: no-op.
+      const extraHeaders = this.getExtraRequestHeaders(url, method, request.headers());
+      if (Object.keys(extraHeaders).length > 0) {
+        await route.continue({ headers: { ...request.headers(), ...extraHeaders } });
+        return;
       }
-      
+
       // Check if URL contains blocked domains
       const shouldBlockDomain = blockedDomains.some(domain => url.includes(domain));
       
       if (shouldBlockDomain) {
-        this.blockedStats.total++;
-        this.blockedStats.byCategory.tracking++;
+        this.blockedTracker.record('tracking');
         await route.abort();
         return;
       }
-      
+
       // Block by resource type
       if (this.performanceConfig.blockCSS && resourceType === 'stylesheet') {
-        this.blockedStats.total++;
-        this.blockedStats.byCategory.css++;
+        this.blockedTracker.record('css');
         await route.abort();
         return;
       }
-      
+
       if (this.performanceConfig.blockImages && resourceType === 'image') {
-        this.blockedStats.total++;
-        this.blockedStats.byCategory.image++;
+        this.blockedTracker.record('image');
         await route.abort();
         return;
       }
-      
+
       if (this.performanceConfig.blockFonts && resourceType === 'font') {
-        this.blockedStats.total++;
-        this.blockedStats.byCategory.font++;
+        this.blockedTracker.record('font');
         await route.abort();
         return;
       }
-      
+
       if (this.performanceConfig.blockMedia && (resourceType === 'media' || resourceType === 'websocket')) {
-        this.blockedStats.total++;
-        this.blockedStats.byCategory.media++;
+        this.blockedTracker.record('media');
         await route.abort();
         return;
       }
-      
+
       // Block non-essential JavaScript using intelligent detection
       if (this.performanceConfig.blockNonEssentialJS && resourceType === 'script') {
         if (!isEssentialJS(url, this.bankName)) {
-          this.blockedStats.total++;
-          this.blockedStats.byCategory.nonEssentialJs++;
+          this.blockedTracker.record('nonEssentialJs');
           await route.abort();
           return;
         }
@@ -451,25 +308,13 @@ export abstract class BaseBankAuth<
     this.log('Initializing optimized browser...');
 
     // Reset blocked stats for new session
-    this.resetBlockedStats();
+    this.blockedTracker.reset();
 
     // Realistic browser headers, shared by both local and remote modes.
     // In local mode these go into newContext(); in remote mode they are the
-    // only context option we can still set after attaching.
-    const extraHTTPHeaders = {
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-      'Accept-Language': 'es-VE,es-419;q=0.9,es;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
-      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"'
-    };
+    // only context option we can still set after attaching. Subclasses can
+    // override getNavigationHeaders() (e.g. an SPA that must NOT inherit them).
+    const extraHTTPHeaders = this.getNavigationHeaders();
 
     if (this.config.browserWSEndpoint) {
       // ---- Remote browser (attach over CDP, e.g. Browserbase) ----
@@ -609,94 +454,7 @@ export abstract class BaseBankAuth<
    */
   protected async applyStealthMeasures(context: BrowserContext): Promise<void> {
     this.log('Applying stealth measures to context (affects all frames)...');
-    
-    await context.addInitScript(() => {
-      // Override navigator.webdriver - most common bot detection
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-        configurable: true
-      });
-      
-      // Override navigator.plugins to look like a real browser
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-          const plugins = [
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
-          ];
-          // Make it array-like with length
-          const pluginArray = Object.create(PluginArray.prototype);
-          plugins.forEach((p, i) => {
-            pluginArray[i] = p;
-          });
-          Object.defineProperty(pluginArray, 'length', { value: plugins.length });
-          return pluginArray;
-        },
-        configurable: true
-      });
-      
-      // Override navigator.languages
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['es-VE', 'es-419', 'es', 'en'],
-        configurable: true
-      });
-      
-      // Override navigator.platform to match Windows user agent
-      Object.defineProperty(navigator, 'platform', {
-        get: () => 'Win32',
-        configurable: true
-      });
-      
-      // Override navigator.hardwareConcurrency (realistic value)
-      Object.defineProperty(navigator, 'hardwareConcurrency', {
-        get: () => 8,
-        configurable: true
-      });
-      
-      // Override navigator.deviceMemory (realistic value)
-      Object.defineProperty(navigator, 'deviceMemory', {
-        get: () => 8,
-        configurable: true
-      });
-      
-      // Override chrome runtime to look like real Chrome
-      // Use unknown cast to safely assign to window.chrome (browser-specific global)
-      const chromeShim = {
-        runtime: {
-          connect: () => {},
-          sendMessage: () => {},
-          onMessage: { addListener: () => {} }
-        },
-        loadTimes: () => ({}),
-        csi: () => ({})
-      };
-      (window as unknown as { chrome: typeof chromeShim }).chrome = chromeShim;
-      
-      // Override permissions API
-      const originalQuery = window.navigator.permissions?.query?.bind(window.navigator.permissions);
-      if (originalQuery) {
-        const permissions = navigator.permissions as Permissions & {
-          query: (desc: PermissionDescriptor) => Promise<PermissionStatus>;
-        };
-        permissions.query = (parameters: PermissionDescriptor) => {
-          if (parameters.name === 'notifications') {
-            return Promise.resolve({ state: 'denied', onchange: null } as PermissionStatus);
-          }
-          return originalQuery(parameters);
-        };
-      }
-      
-      // Make toString() on functions look native
-      const originalFunction = Function.prototype.toString;
-      Function.prototype.toString = function() {
-        if (this === Function.prototype.toString) {
-          return 'function toString() { [native code] }';
-        }
-        return originalFunction.call(this);
-      };
-    });
-    
+    await applyStealthInitScript(context);
     this.log('Stealth measures applied');
   }
 
@@ -809,29 +567,14 @@ export abstract class BaseBankAuth<
    * Get log content
    */
   getLogContent(): string {
-    try {
-      if (existsSync(this.logFile)) {
-        return readFileSync(this.logFile, 'utf-8');
-      }
-      return 'Log file not found';
-    } catch (error) {
-      return `Error reading log file: ${error}`;
-    }
+    return this.debugLogger.getLogContent();
   }
 
   /**
    * Export logs to a specific file
    */
   exportLogs(targetPath: string): boolean {
-    try {
-      const content = this.getLogContent();
-      writeFileSync(targetPath, content);
-      this.log(`Logs exported to: ${targetPath}`);
-      return true;
-    } catch (error) {
-      this.log(`Failed to export logs: ${error}`);
-      return false;
-    }
+    return this.debugLogger.exportLogs(targetPath);
   }
 
   /**
@@ -840,8 +583,9 @@ export abstract class BaseBankAuth<
   async close(): Promise<void> {
     try {
       // Log blocked resources summary before closing
-      this.logBlockedStatsSummary();
-      
+      const blockedSummary = this.blockedTracker.takeSummary();
+      if (blockedSummary) this.log(blockedSummary);
+
       // For a remote (CDP-attached) browser the page and context belong to the
       // remote session — closing them is a no-op at best and can throw. We only
       // disconnect the browser, which ends the remote session (e.g. Browserbase).
