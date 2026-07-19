@@ -30,8 +30,6 @@
 import * as cheerio from 'cheerio';
 import {
   parseTransactionsTable,
-  parseCookies,
-  serializeCookies,
   parseAspNetFormFields,
   parseAllHiddenFields,
   findBestTransactionPostBack,
@@ -39,6 +37,16 @@ import {
   parseAccountsFromDashboard,
   type PostBackAction
 } from './form-parser.js';
+import {
+  looksLikeLoginContainer,
+  isBanescoErrorPage,
+  pageSaysNoMovements,
+} from './page-classifier.js';
+import {
+  parseMovementsFromHtml,
+  parseTransactionRows,
+} from './movements-parser.js';
+import { BanescoTransport } from './transport.js';
 
 // ============================================================================
 // Types
@@ -143,7 +151,7 @@ export class BanescoHttpClient {
     cookies?: Map<string, string> | Record<string, string>;
     skipLogin: boolean;
   };
-  private cookies: Map<string, string> = new Map();
+  private transport: BanescoTransport;
   private isAuthenticated: boolean = false;
 
   constructor(credentials: BanescoHttpCredentials, config: BanescoHttpConfig = {}) {
@@ -155,19 +163,29 @@ export class BanescoHttpClient {
       skipLogin: config.skipLogin ?? false
     };
 
+    this.transport = new BanescoTransport(
+      {
+        userAgent: this.config.userAgent,
+        timeout: this.config.timeout,
+        baseUrl: BANESCO_URLS.BASE,
+        loginPageUrl: BANESCO_URLS.LOGIN_PAGE,
+      },
+      (m) => this.log(m),
+    );
+
     // Import pre-set cookies if provided
     if (config.cookies) {
       if (config.cookies instanceof Map) {
-        config.cookies.forEach((value, name) => this.cookies.set(name, value));
+        config.cookies.forEach((value, name) => this.transport.setCookie(name, value));
       } else {
-        Object.entries(config.cookies).forEach(([name, value]) => this.cookies.set(name, value));
+        Object.entries(config.cookies).forEach(([name, value]) => this.transport.setCookie(name, value));
       }
       this.isAuthenticated = config.skipLogin ?? false;
-      this.log(`BanescoHttpClient initialized with ${this.cookies.size} pre-set cookies`);
+      this.log(`BanescoHttpClient initialized with ${this.transport.cookieCount} pre-set cookies`);
     } else {
       this.log(`BanescoHttpClient initialized`);
     }
-    
+
     this.log(`   Username: ${credentials.username.substring(0, 3)}***`);
   }
 
@@ -230,11 +248,11 @@ export class BanescoHttpClient {
 
       // Legacy fallback: try dashboard postback navigation (older Banesco layouts)
       this.log('Falling back to legacy dashboard postback navigation...');
-      const dashboardHtml = await this.fetchPage(BANESCO_URLS.DASHBOARD);
+      const dashboardHtml = await this.transport.fetchPage(BANESCO_URLS.DASHBOARD);
 
       const { rows, tableFound } = parseTransactionsTable(dashboardHtml);
       if (tableFound && rows.length > 0) {
-        const transactions = this.parseTransactionRows(rows);
+        const transactions = parseTransactionRows(rows);
         return {
           success: true,
           message: `Found ${transactions.length} transactions on legacy dashboard`,
@@ -270,7 +288,7 @@ export class BanescoHttpClient {
         };
       }
 
-      const legacyTransactions = this.parseTransactionRows(parsed.rows);
+      const legacyTransactions = parseTransactionRows(parsed.rows);
       return {
         success: true,
         message: `Found ${legacyTransactions.length} transactions (legacy)`,
@@ -302,7 +320,7 @@ export class BanescoHttpClient {
       const formData = buildPostBackFormData(formFields, allHiddenFields, action);
       
       // POST to the dashboard URL (WebForms posts back to the same page)
-      const response = await this.postForm(BANESCO_URLS.DASHBOARD, formData);
+      const response = await this.transport.postForm(BANESCO_URLS.DASHBOARD, formData);
       
       // Handle redirects if needed
       if (response.status >= 300 && response.status < 400) {
@@ -310,7 +328,7 @@ export class BanescoHttpClient {
         if (location) {
           const redirectUrl = new URL(location, BANESCO_URLS.BASE).toString();
           this.log(`   Following redirect to: ${redirectUrl.split('/').pop()}`);
-          return await this.fetchPage(redirectUrl);
+          return await this.transport.fetchPage(redirectUrl);
         }
       }
       
@@ -334,7 +352,7 @@ export class BanescoHttpClient {
    * Get current cookies (for debugging)
    */
   getCookies(): Map<string, string> {
-    return new Map(this.cookies);
+    return this.transport.getCookies();
   }
 
   /**
@@ -354,7 +372,7 @@ export class BanescoHttpClient {
     let importedCount = 0;
     for (const cookie of playwrightCookies) {
       if (cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string') {
-        this.cookies.set(cookie.name, cookie.value);
+        this.transport.setCookie(cookie.name, cookie.value);
         importedCount++;
         this.log(`   [Cookie] Imported: ${cookie.name}`);
       }
@@ -385,12 +403,12 @@ export class BanescoHttpClient {
       this.log('Fetching accounts...');
 
       // Prefer the dedicated accounts page (more stable than Default.aspx in newer layouts)
-      let html = await this.fetchPage(BANESCO_URLS.CONSULTAS_CUENTAS);
+      let html = await this.transport.fetchPage(BANESCO_URLS.CONSULTAS_CUENTAS);
 
       // If we hit an error or login container, fall back to the legacy dashboard
-      if (this.isBanescoErrorPage(html) || this.looksLikeLoginContainer(html)) {
+      if (isBanescoErrorPage(html) || looksLikeLoginContainer(html)) {
         this.log('   Accounts page looks invalid (error/login). Falling back to legacy dashboard...');
-        html = await this.fetchPage(BANESCO_URLS.DASHBOARD);
+        html = await this.transport.fetchPage(BANESCO_URLS.DASHBOARD);
       }
 
       // Debug: save HTML if in debug mode
@@ -453,14 +471,14 @@ export class BanescoHttpClient {
 
       // Step 1: Load movements page directly (newer layouts + iframe container make Default.aspx unreliable)
       this.log(`   Step 1: Loading movements page...`);
-      const movementsPageHtml = await this.fetchPage(BANESCO_URLS.MOVIMIENTOS_CUENTA);
+      const movementsPageHtml = await this.transport.fetchPage(BANESCO_URLS.MOVIMIENTOS_CUENTA);
 
       if (this.config.debug) {
         const fs = await import('fs');
         fs.writeFileSync('debug-banesco-movements-form.html', movementsPageHtml);
       }
 
-      if (this.isBanescoErrorPage(movementsPageHtml) || this.looksLikeLoginContainer(movementsPageHtml)) {
+      if (isBanescoErrorPage(movementsPageHtml) || looksLikeLoginContainer(movementsPageHtml)) {
         return {
           success: false,
           message: 'Movements page returned an error/login page (session may be invalid or Banesco blocked the request)',
@@ -498,7 +516,7 @@ export class BanescoHttpClient {
       
       while (pageNumber <= maxPages) {
         // Parse transactions from current page
-        const pageTransactions = this.parseMovementsFromHtml(currentPageHtml, accountNumber);
+        const pageTransactions = parseMovementsFromHtml(currentPageHtml, accountNumber, (m) => this.log(m));
         
         if (pageTransactions.length > 0) {
           this.log(`   Page ${pageNumber}: Found ${pageTransactions.length} transactions`);
@@ -625,7 +643,7 @@ export class BanescoHttpClient {
       };
       
       // Submit the pagination form
-      const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
+      const response = await this.transport.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
       
       // Handle redirect if needed
       if (response.status >= 300 && response.status < 400) {
@@ -633,14 +651,14 @@ export class BanescoHttpClient {
         if (location) {
           const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
           this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
-          return await this.fetchPage(absoluteUrl);
+          return await this.transport.fetchPage(absoluteUrl);
         }
       }
       
       const nextHtml = await response.text();
       
       // Verify we got a valid page (not an error page)
-      if (this.isBanescoErrorPage(nextHtml)) {
+      if (isBanescoErrorPage(nextHtml)) {
         this.log(`   Next page returned an error`);
         return null;
       }
@@ -802,7 +820,7 @@ export class BanescoHttpClient {
         if (consultField) formData[consultField] = consultValue;
 
         this.log(`   Posting movements form (rdbRango: ${formatDate(thirtyDaysAgo)} - ${formatDate(today)})`);
-        const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
+        const response = await this.transport.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, formData);
 
         // Handle redirect if needed
         if (response.status >= 300 && response.status < 400) {
@@ -810,7 +828,7 @@ export class BanescoHttpClient {
           if (location) {
             const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
             this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
-            return await this.fetchPage(absoluteUrl);
+            return await this.transport.fetchPage(absoluteUrl);
           }
         }
 
@@ -835,7 +853,7 @@ export class BanescoHttpClient {
         if (consultField) attemptForm[consultField] = consultValue;
 
         this.log(`   Posting movements form (period=${period.value || 'n/a'})`);
-        const response = await this.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, attemptForm);
+        const response = await this.transport.postForm(BANESCO_URLS.MOVIMIENTOS_CUENTA, attemptForm);
       
         // Handle redirect if needed
         if (response.status >= 300 && response.status < 400) {
@@ -843,22 +861,22 @@ export class BanescoHttpClient {
           if (location) {
             const absoluteUrl = new URL(location, BANESCO_URLS.BASE).href;
             this.log(`   Following redirect to: ${absoluteUrl.split('/').pop()}`);
-            const redirectedHtml = await this.fetchPage(absoluteUrl);
-            const txs = this.parseMovementsFromHtml(redirectedHtml, desiredAccountNumber);
+            const redirectedHtml = await this.transport.fetchPage(absoluteUrl);
+            const txs = parseMovementsFromHtml(redirectedHtml, desiredAccountNumber, (m) => this.log(m));
             if (txs.length > 0) return redirectedHtml;
-            if (this.pageSaysNoMovements(redirectedHtml)) continue;
+            if (pageSaysNoMovements(redirectedHtml)) continue;
             // otherwise keep trying other periods
             continue;
           }
         }
 
         const htmlOut = await response.text();
-        const txs = this.parseMovementsFromHtml(htmlOut, desiredAccountNumber);
+        const txs = parseMovementsFromHtml(htmlOut, desiredAccountNumber, (m) => this.log(m));
         if (txs.length > 0) return htmlOut;
-        if (this.pageSaysNoMovements(htmlOut)) continue;
+        if (pageSaysNoMovements(htmlOut)) continue;
 
         // If we got an error page, stop trying further (likely blocked)
-        if (this.isBanescoErrorPage(htmlOut)) return htmlOut;
+        if (isBanescoErrorPage(htmlOut)) return htmlOut;
       }
 
       // Return last attempt's result (or null if no attempts)
@@ -871,406 +889,6 @@ export class BanescoHttpClient {
     }
   }
 
-  private looksLikeLoginContainer(html: string): boolean {
-    const lower = html.toLowerCase();
-    // Authenticated container still contains salir.aspx; unauthenticated login has txtUsuario
-    const hasSalir = lower.includes('salir.aspx') || lower.includes('logout');
-    const hasLoginInputs = lower.includes('txtusuario') || lower.includes('txtloginname') || lower.includes('login.aspx');
-    // If it has login inputs without salir, it's likely not authenticated.
-    return hasLoginInputs && !hasSalir;
-  }
-
-  private isBanescoErrorPage(html: string): boolean {
-    const lower = html.toLowerCase();
-    return lower.includes('error.aspx') || lower.includes('en estos momentos no podemos procesar su operación') || lower.includes('gueg001');
-  }
-
-  private pageSaysNoMovements(html: string): boolean {
-    const pageText = cheerio.load(html)('body').text().toLowerCase();
-    return (
-      pageText.includes('no posee movimientos') ||
-      pageText.includes('no hay movimientos') ||
-      pageText.includes('no existen movimientos') ||
-      pageText.includes('sin movimientos') ||
-      pageText.includes('no se encontraron movimientos') ||
-      pageText.includes('no hay registros') ||
-      pageText.includes('sin registros para mostrar')
-    );
-  }
-
-  /**
-   * Parse movements/transactions from HTML page
-   * Uses flexible parsing approach similar to the Playwright scraper
-   */
-  private parseMovementsFromHtml(html: string, _accountNumber: string): BanescoHttpTransaction[] {
-    const $ = cheerio.load(html);
-    const transactions: BanescoHttpTransaction[] = [];
-    
-    // First check for "no movements" messages
-    const pageText = $('body').text().toLowerCase();
-    const noMovementsPatterns = [
-      'no posee movimientos',
-      'no hay movimientos',
-      'no existen movimientos',
-      'sin movimientos',
-      'no se encontraron movimientos',
-      'no hay registros',
-      'sin registros para mostrar'
-    ];
-    
-    if (noMovementsPatterns.some(pattern => pageText.includes(pattern))) {
-      this.log('   No movements message found on page');
-      return [];
-    }
-    
-    // Look for ALL tables and analyze each one
-    $('table').each((_, table) => {
-      const $table = $(table);
-      const rows = $table.find('tr');
-      
-      if (rows.length < 2) return; // Skip tables with only header or no data
-      
-      // Check if headers contain transaction-related keywords
-      const headerRow = rows.first();
-      const headerText = headerRow.text().toLowerCase();
-      const containsTransactionHeaders = /fecha|date|monto|amount|descripci[oó]n|description|saldo|balance|d[eé]bito|cr[eé]dito|referencia/i.test(headerText);
-      
-      if (!containsTransactionHeaders) return;
-      
-      this.log(`   Found table with transaction headers: ${headerText.substring(0, 50)}...`);
-      
-      // Parse data rows (skip header)
-      rows.slice(1).each((_, rowEl) => {
-        const $row = $(rowEl);
-        const cells: string[] = [];
-        
-        $row.find('td').each((_, cellEl) => {
-          cells.push($(cellEl).text().trim());
-        });
-        
-        if (cells.length < 3) return;
-        
-        // Use flexible parsing (similar to Playwright scraper)
-        const tx = this.parseTransactionRowFlexible(cells);
-        if (tx) {
-          transactions.push(tx);
-        }
-      });
-    });
-    
-    return transactions;
-  }
-
-  /**
-   * Flexible row parsing - finds date, amount, description in any cell position
-   */
-  private parseTransactionRowFlexible(cells: string[]): BanescoHttpTransaction | null {
-    // Find date (DD/MM/YYYY format)
-    let date: string | null = null;
-    for (const cell of cells) {
-      const dateMatch = cell.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
-      if (dateMatch) {
-        const [, day, month, year] = dateMatch;
-        const fullYear = year.length === 2 ? `20${year}` : year;
-        date = `${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-        break;
-      }
-    }
-    
-    // Find amount (number with comma/period)
-    let amount = 0;
-    let amountCell = '';
-    for (const cell of cells) {
-      // Look for numeric cells with decimal separators
-      const cleanCell = cell.replace(/\s/g, '');
-      if (/^[\d.,-]+$/.test(cleanCell) && (cleanCell.includes(',') || cleanCell.includes('.'))) {
-        amountCell = cell;
-        // Parse Spanish format (1.234,56)
-        const normalized = cleanCell.replace(/\./g, '').replace(/,/g, '.');
-        amount = Math.abs(parseFloat(normalized)) || 0;
-        if (amount > 0) break;
-      }
-    }
-    
-    // Find D/C indicator (D, C, +, or -)
-    let transactionType: 'debit' | 'credit' = 'credit';
-    for (const cell of cells) {
-      const trimmed = cell.trim().toUpperCase();
-      if (trimmed === 'D' || trimmed === '-') {
-        transactionType = 'debit';
-        break;
-      } else if (trimmed === 'C' || trimmed === '+') {
-        transactionType = 'credit';
-        break;
-      }
-    }
-    
-    // Also check if amount was negative
-    if (amountCell.includes('-')) {
-      transactionType = 'debit';
-    }
-    
-    // Find reference (numeric string of 6+ digits, not a date or amount)
-    let reference: string | undefined = undefined;
-    for (const cell of cells) {
-      const trimmed = cell.trim().replace(/\s/g, '');
-      // Reference is typically a pure numeric string with 6+ digits
-      // Skip if it looks like a date (contains / or -)
-      if (/[/-]/.test(trimmed)) continue;
-      // Skip if it looks like an amount (contains comma or period as decimal)
-      if (/[.,]/.test(trimmed)) continue;
-      // Skip D/C indicators
-      if (/^[DC]$/i.test(trimmed)) continue;
-      // Match 6+ digit reference numbers
-      if (/^\d{6,}$/.test(trimmed)) {
-        reference = trimmed;
-        break;
-      }
-    }
-
-    // Find description (longest text that's not date/amount/reference)
-    let description = '';
-    for (const cell of cells) {
-      const trimmed = cell.trim();
-      // Skip if it looks like date, amount, D/C, or reference
-      if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(trimmed)) continue;
-      if (/^[\d.,-]+$/.test(trimmed.replace(/\s/g, ''))) continue;
-      if (/^[DC]$/i.test(trimmed)) continue;
-      if (/^\d{6,}$/.test(trimmed.replace(/\s/g, ''))) continue;
-      
-      if (trimmed.length > description.length && trimmed.length > 3) {
-        description = trimmed;
-      }
-    }
-    
-    // Require at least date and amount
-    if (!date || amount === 0) {
-      return null;
-    }
-    
-    return {
-      date,
-      description: description || 'Transacción',
-      amount,
-      type: transactionType,
-      reference
-    };
-  }
-
-  // ==========================================================================
-  // Internal: HTTP Helpers
-  // ==========================================================================
-
-  private async fetchPage(url: string): Promise<string> {
-    const response = await this.makeRequest(url, {
-      method: 'GET',
-      redirect: 'follow'
-    });
-    
-    return response.text();
-  }
-
-  private async postForm(url: string, formData: Record<string, string>): Promise<Response> {
-    const response = await this.makeRequest(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams(formData).toString(),
-      redirect: 'manual' // Handle redirects manually to capture cookies
-    });
-    
-    // If redirected, follow but first capture any new cookies
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (location) {
-        // Cookies are already captured in makeRequest
-        // Return the response so caller can handle redirect
-      }
-    }
-    
-    return response;
-  }
-
-  private async makeRequest(url: string, options: RequestInit = {}): Promise<Response> {
-    const headers: HeadersInit = {
-      'User-Agent': this.config.userAgent,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'es-US,es;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Cache-Control': 'max-age=0',
-      'Sec-Fetch-Dest': options.method === 'POST' ? 'iframe' : 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'same-origin',
-      'Sec-Fetch-User': '?1',
-      ...(options.headers || {})
-    };
-    
-    // Add cookies
-    if (this.cookies.size > 0) {
-      (headers as Record<string, string>)['Cookie'] = serializeCookies(this.cookies);
-      this.log(`   [Cookie] Sending: ${serializeCookies(this.cookies).substring(0, 50)}...`);
-    }
-    
-    // Add Referer for all requests (Banesco validates this)
-    // Use the authenticated container page as referer for GET, or the request URL for POST
-    if (options.method === 'POST') {
-      (headers as Record<string, string>)['Origin'] = BANESCO_URLS.BASE;
-      (headers as Record<string, string>)['Referer'] = url;
-    } else {
-      // For GET requests, pretend we're navigating from the authenticated dashboard
-      (headers as Record<string, string>)['Referer'] = BANESCO_URLS.LOGIN_PAGE;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
-
-    try {
-      this.log(`   [${options.method || 'GET'}] ${url.substring(url.lastIndexOf('/') + 1)}`);
-      
-      const response = await fetch(url, {
-        ...options,
-        headers,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      // Capture cookies from response - handle multiple Set-Cookie headers
-      // Node.js fetch combines them with ", " but we need to parse carefully
-      const setCookieRaw = response.headers.get('set-cookie');
-      if (setCookieRaw) {
-        // Split by ", " but be careful with expires dates that also contain ", "
-        // Each cookie typically starts with a name= pattern
-        const cookieParts = setCookieRaw.split(/,(?=[A-Za-z_][A-Za-z0-9_]*=)/);
-        for (const part of cookieParts) {
-          const newCookies = parseCookies(part.trim());
-          newCookies.forEach((value, name) => {
-            this.cookies.set(name, value);
-            this.log(`   [Cookie] Set: ${name}=${value.substring(0, 20)}...`);
-          });
-        }
-      }
-      
-      this.log(`   [Response] ${response.status} ${response.statusText}`);
-      
-      return response;
-      
-    } catch (error: unknown) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Request timeout after ${this.config.timeout}ms`);
-      }
-      throw error;
-    }
-  }
-
-  // ==========================================================================
-  // Internal: Transaction Parsing
-  // ==========================================================================
-
-  private parseTransactionRows(rows: string[][]): BanescoHttpTransaction[] {
-    const transactions: BanescoHttpTransaction[] = [];
-    
-    for (const row of rows) {
-      if (row.length < 3) continue;
-      
-      try {
-        const dateStr = this.findDateInRow(row);
-        const amountStr = this.findAmountInRow(row);
-        const description = this.findDescriptionInRow(row);
-        const dcValue = this.findDCValue(row);
-        
-        if (!dateStr || !amountStr) continue;
-        
-        const amount = this.parseAmount(amountStr);
-        const type = dcValue === 'D' ? 'debit' : 'credit';
-        
-        transactions.push({
-          date: this.parseDate(dateStr),
-          description: description || 'Transacción',
-          amount: Math.abs(amount),
-          type
-        });
-        
-      } catch {
-        continue;
-      }
-    }
-    
-    return transactions;
-  }
-
-  private findDateInRow(row: string[]): string | null {
-    for (const cell of row) {
-      if (/\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(cell)) {
-        return cell;
-      }
-    }
-    return null;
-  }
-
-  private findAmountInRow(row: string[]): string | null {
-    for (const cell of row) {
-      if (/[\d.,]+/.test(cell) && (cell.includes(',') || cell.includes('.'))) {
-        return cell;
-      }
-    }
-    return null;
-  }
-
-  private findDescriptionInRow(row: string[]): string | null {
-    let longestCell = '';
-    for (const cell of row) {
-      if (cell.length > longestCell.length && 
-          !this.findDateInRow([cell]) && 
-          !this.findAmountInRow([cell])) {
-        longestCell = cell;
-      }
-    }
-    return longestCell || null;
-  }
-
-  private findDCValue(row: string[]): string {
-    for (const cell of row) {
-      if (/^[DC]$/i.test(cell.trim())) {
-        return cell.trim().toUpperCase();
-      }
-    }
-    return '';
-  }
-
-  private parseAmount(amountString: string): number {
-    const cleanAmount = amountString
-      .replace(/[^\d,.-]/g, '')
-      .replace(/\./g, '')
-      .replace(/,/g, '.');
-    return parseFloat(cleanAmount) || 0;
-  }
-
-  private parseDate(dateString: string): string {
-    const cleanDate = dateString.replace(/[^\d/-]/g, '');
-    
-    if (cleanDate.includes('/')) {
-      const parts = cleanDate.split('/');
-      if (parts.length === 3) {
-        const [day, month, year] = parts;
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      }
-    }
-    
-    if (cleanDate.includes('-')) {
-      const parts = cleanDate.split('-');
-      if (parts.length === 3) {
-        const [day, month, year] = parts;
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      }
-    }
-    
-    return dateString;
-  }
 
   // ==========================================================================
   // Internal: Logging
