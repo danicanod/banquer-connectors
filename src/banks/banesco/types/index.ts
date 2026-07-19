@@ -13,8 +13,6 @@ import {
 
 // Re-export base types for convenience
 export type {
-  BankAccount as Account,
-  BankTransaction as Transaction,
   LoginResult,
   ScrapingResult,
   BrowserConfig

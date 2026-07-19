@@ -53,8 +53,6 @@ export type {
   BanescoAuthConfig,
   BanescoAccount,
   BanescoTransaction,
-  Account,
-  Transaction,
   LoginResult,
   BrowserConfig,
 } from './types/index.js';

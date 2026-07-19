@@ -16,12 +16,6 @@ import {
   BaseBankScrapingResult,
 } from '../../../shared/types/index.js';
 
-// Re-export base types for convenience (mirrors banesco/bnc)
-export type {
-  BankAccount as Account,
-  BankTransaction as Transaction,
-} from '../../../shared/types/index.js';
-
 /**
  * Facebank credentials.
  *

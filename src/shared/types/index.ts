@@ -7,11 +7,10 @@ import { PERFORMANCE_PRESETS } from '../performance-config.js';
 // Shared types for all bank implementations
 export * from './base.js';
 
-// Re-export base types with common aliases
-export type {
-  BankAccount as Account,
-  BankTransaction as Transaction,
-} from './base.js';
+// Note: the canonical `Account`/`Transaction` names belong to `core/types.ts`
+// (the normalized cross-bank model). The raw per-bank shapes are exported here
+// as `BankAccount`/`BankTransaction` — do NOT re-alias them to `Account`/
+// `Transaction`, which previously collided with the core types of the same name.
 
 // Base authentication configuration that all banks should support
 export interface BaseBankAuthConfig {
@@ -19,6 +18,12 @@ export interface BaseBankAuthConfig {
   timeout?: number;        // Default: 30000ms
   debug?: boolean;         // Default: false
   saveSession?: boolean;   // Default: true
+  /**
+   * When debug is on, pause the flow with the Playwright Inspector
+   * (`page.pause()`) at each checkpoint. Set false for attended flows to log
+   * checkpoints without halting. Default: true.
+   */
+  pauseOnDebug?: boolean;
   /**
    * When set, connect to a remote browser over the Chrome DevTools Protocol
    * (e.g. a Browserbase session's `connectUrl`) instead of launching a local

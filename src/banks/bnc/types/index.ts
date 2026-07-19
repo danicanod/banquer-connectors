@@ -11,12 +11,6 @@ import {
   BaseBankScrapingResult
 } from '../../../shared/types/index.js';
 
-// Re-export base types for convenience
-export type {
-  BankAccount as Account,
-  BankTransaction as Transaction
-} from '../../../shared/types/index.js';
-
 // BNC-specific credentials (3-step authentication) - extends base
 export interface BncCredentials extends BaseBankCredentials {
   id: string;        // Cédula de identidad
@@ -27,7 +21,13 @@ export interface BncCredentials extends BaseBankCredentials {
 // Alias for backward compatibility with other bank patterns
 export type BNCCredentials = BncCredentials;
 
-// BNC authentication configuration - extends base
+/**
+ * BNC authentication configuration.
+ *
+ * @deprecated BNC is a pure-HTTP connector and does not use `BaseBankAuth`; its
+ * client is configured via `BncHttpConfig`/`BncClientConfig` instead. This type
+ * is retained only for back-compat and is not consumed by the BNC code path.
+ */
 export interface BncAuthConfig extends BaseBankAuthConfig {
   retries?: number;      // BNC-specific: retry attempts
 }

@@ -1,12 +1,13 @@
-// Base interfaces for all bank scrapers
+// Raw per-bank interfaces (the shapes scrapers/HTTP clients emit before
+// normalization). The canonical, normalized cross-bank domain model —
+// `Account` and `Transaction` with a deterministic `txnKey` — lives in
+// `core/types.ts`; use `normalizeTransactions()` to convert these into it.
 
-export interface BankCredentials {
-  username: string;
-  password: string;
-  securityQuestions?: string;
-  additionalFields?: Record<string, string>;
-}
-
+/**
+ * Raw account shape a bank scraper produces. Bank-specific types
+ * (`BanescoAccount`, `BncAccount`, `FacebankAccount`) extend this. For the
+ * normalized cross-bank account model see `Account` in `core/types.ts`.
+ */
 export interface BankAccount {
   accountNumber: string;
   accountType: string;
@@ -18,6 +19,12 @@ export interface BankAccount {
   availableBalance?: number;
 }
 
+/**
+ * Raw transaction row a bank scraper produces. Bank-specific types extend this.
+ * For the normalized cross-bank model (positive amount + `txnKey`) see
+ * `Transaction` in `core/types.ts`, and `BankTransactionInput` for the
+ * normalization input contract.
+ */
 export interface BankTransaction {
   id?: string;
   date: string;
@@ -28,6 +35,10 @@ export interface BankTransaction {
   category?: string;
 }
 
+/**
+ * @deprecated Use `BaseBankLoginResult` from `shared/types` — it is the shape
+ * the `BaseBankAuth` login template actually returns. Kept for back-compat.
+ */
 export interface LoginResult {
   success: boolean;
   message: string;
@@ -52,14 +63,6 @@ export interface BrowserConfig {
   viewport: { width: number; height: number };
 }
 
-// Base interface for bank scrapers
-export interface BankScraper {
-  login(): Promise<LoginResult>;
-  scrapeAccounts(): Promise<ScrapingResult<BankAccount>>;
-  scrapeTransactions(accountUrl?: string): Promise<ScrapingResult<BankTransaction>>;
-  close(): Promise<void>;
-}
-
 // Bank configuration
 export interface BankConfig {
   name: string;
@@ -70,12 +73,3 @@ export interface BankConfig {
   locale?: string;
   timezone?: string;
 }
-
-export enum SupportedBanks {
-  BANESCO = 'banesco',
-  BNC = 'bnc',
-  FACEBANK = 'facebank',
-  // Future banks can be added here
-  // BOD = 'bod',
-  // MERCANTIL = 'mercantil'
-} 

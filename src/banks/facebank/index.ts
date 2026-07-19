@@ -42,8 +42,6 @@ export type {
   FacebankScrapingResult,
   FacebankAccountsResult,
   FacebankMovementsResult,
-  Account,
-  Transaction,
 } from './types/index.js';
 
 export { FACEBANK_URLS, FACEBANK_ROUTES, FACEBANK_SELECTORS, FACEBANK_CONFIG } from './types/index.js';

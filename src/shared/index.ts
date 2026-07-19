@@ -3,18 +3,11 @@
 // Base classes
 export { BaseBankAuth } from './base-bank-auth.js';
 
-// Utilities
-export { NetworkLogger, createNetworkLogger } from './utils/network-logger.js';
-export type { NetworkLogEntry, NetworkLoggerConfig, CapturedRequest, CapturedResponse } from './utils/network-logger.js';
-
 // HTTP Client utilities
-export { 
-  CookieFetch, 
+export {
+  CookieFetch,
   createCookieFetch,
-  extractRequestVerificationToken,
-  extractAspNetFields,
-  extractTableData,
-  parseJsonResponse
+  extractRequestVerificationToken
 } from './utils/http-client.js';
 export type { HttpClientConfig, RequestOptions, FormPostResult } from './utils/http-client.js';
 
