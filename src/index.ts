@@ -1,8 +1,9 @@
 /**
- * Banquer Connectors - Venezuelan bank connectors (Banesco, BNC)
+ * Banquer Connectors - Venezuelan & PR bank connectors (Banesco, BNC, Facebank)
  *
- * A TypeScript library for connecting to Venezuelan bank accounts.
- * Supports Banesco (hybrid: Playwright login + HTTP fetch) and BNC (pure HTTP).
+ * A TypeScript library for connecting to bank accounts.
+ * Supports Banesco (hybrid: Playwright login + HTTP fetch), BNC (pure HTTP),
+ * and Facebank PR (Playwright login + emailed OTP + in-browser scraping).
  *
  * @example
  * ```typescript
@@ -118,6 +119,42 @@ export {
 } from './banks/bnc/types/index.js';
 
 // ============================================================================
+// Facebank Bank Exports (PR) — Playwright login + in-browser data scraping
+// ============================================================================
+
+// Main client (recommended)
+export {
+  FacebankClient,
+  createFacebankClient,
+  type FacebankClientCredentials,
+  type FacebankClientConfig,
+  type FacebankClientLoginResult,
+} from './banks/facebank/client.js';
+
+// Advanced: auth + scraper (for custom flows)
+export { FacebankAuth } from './banks/facebank/auth/facebank-auth.js';
+export { FacebankScraper } from './banks/facebank/scraper/facebank-scraper.js';
+
+// Types
+export type {
+  FacebankCredentials,
+  FacebankAuthConfig,
+  FacebankAccount,
+  FacebankTransaction,
+  FacebankLoginResult,
+  FacebankScrapingResult,
+  FacebankAccountsResult,
+  FacebankMovementsResult,
+} from './banks/facebank/types/index.js';
+
+export {
+  FACEBANK_URLS,
+  FACEBANK_ROUTES,
+  FACEBANK_SELECTORS,
+  FACEBANK_CONFIG,
+} from './banks/facebank/types/index.js';
+
+// ============================================================================
 // Shared Infrastructure Exports (Advanced)
 // ============================================================================
 
@@ -133,6 +170,9 @@ export {
   PERFORMANCE_PRESETS,
   type PerformanceConfig,
 } from './shared/performance-config.js';
+
+// Interactive input helper (e.g. OTP prompt fallback for CLI flows)
+export { promptForInput } from './shared/utils/interactive.js';
 
 // ============================================================================
 // Unified Transaction Model Exports (from core/)

@@ -73,6 +73,8 @@ export interface BankConfig {
 
 export enum SupportedBanks {
   BANESCO = 'banesco',
+  BNC = 'bnc',
+  FACEBANK = 'facebank',
   // Future banks can be added here
   // BOD = 'bod',
   // MERCANTIL = 'mercantil'

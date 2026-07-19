@@ -9,8 +9,9 @@ src/
 ├── core/           # Bank-agnostic domain (transactions, types)
 ├── shared/         # Shared utilities (HTTP client, base auth, performance)
 ├── banks/          # Bank-specific implementations
-│   ├── banesco/
-│   └── bnc/
+│   ├── banesco/    # Hybrid: Playwright login + HTTP fetch
+│   ├── bnc/        # Pure HTTP
+│   └── facebank/   # Playwright login (+ emailed OTP) + in-browser scraping
 ├── dev/            # Development utilities (not published)
 └── index.ts        # Public API entrypoint
 ```
@@ -46,10 +47,10 @@ src/
 The library exposes:
 
 1. **Main entrypoint** (`@danicanod/banquer-connectors`)
-   - `createBanescoClient`, `createBncClient` - Client factories
+   - `createBanescoClient`, `createBncClient`, `createFacebankClient` - Client factories
    - `normalizeTransactions`, `makeTxnKey` - Transaction utilities
 
-2. **Bank-specific entrypoints** (`@danicanod/banquer-connectors/banesco`, `@danicanod/banquer-connectors/bnc`)
+2. **Bank-specific entrypoints** (`@danicanod/banquer-connectors/banesco`, `.../bnc`, `.../facebank`)
    - Advanced APIs for custom flows
 
 3. **Core utilities** (`@danicanod/banquer-connectors/core`)
