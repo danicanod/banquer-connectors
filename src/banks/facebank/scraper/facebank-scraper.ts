@@ -60,7 +60,10 @@ export class FacebankScraper {
         };
       }
 
-      await this.waitForRows(frame, 15000); // Kendo populates rows async
+      // The grid stays empty/hidden until an account is chosen and "Buscar" is
+      // clicked, so drive that before reading.
+      await this.selectAccountAndSearch(frame);
+      await this.waitForRows(frame, 20000); // Kendo populates rows async
       const accountNumber = await this.readSelectedAccountNumber(frame);
       const transactions = await this.readTreegrid(frame, accountNumber);
 
@@ -123,9 +126,9 @@ export class FacebankScraper {
       return null;
     }
 
-    const frame = await this.findFrameWith(TREEGRID_SELECTOR, 25000);
+    const frame = await this.findMovementsFrame(25000);
     if (!frame) {
-      this.log('Movements grid did not appear after navigation.');
+      this.log('Movements view frame did not appear after navigation.');
       return null;
     }
     this.log('Movements view loaded.');
@@ -194,19 +197,93 @@ export class FacebankScraper {
     return false;
   }
 
-  /** Poll every frame until one contains a visible `selector` (or timeout). */
-  private async findFrameWith(selector: string, timeoutMs: number): Promise<Frame | null> {
+  /**
+   * Poll every frame until one contains the movements treegrid. We match on
+   * PRESENCE, not visibility: the grid element exists but is hidden until an
+   * account is selected and the search runs.
+   */
+  private async findMovementsFrame(timeoutMs: number): Promise<Frame | null> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       for (const frame of this.page.frames()) {
         try {
-          const el = await frame.$(selector);
-          if (el && (await el.isVisible())) return frame;
+          if (await frame.$(TREEGRID_SELECTOR)) return frame;
         } catch {
           /* frame detached mid-check; ignore */
         }
       }
       await this.page.waitForTimeout(500);
+    }
+    return null;
+  }
+
+  /**
+   * Select the first real account in the Kendo dropdown and click "Buscar".
+   * COBIS renders the movements grid only after a search is executed against a
+   * chosen account (multi-account iteration + date filtering are future work).
+   */
+  private async selectAccountAndSearch(frame: Frame): Promise<void> {
+    try {
+      const selId = await this.findAccountSelectId(frame);
+      if (selId) {
+        this.log(`Selecting account (dropdown #${selId})...`);
+        // Open the Kendo dropdown — the clickable wrap sits just before the
+        // hidden native <select>.
+        const wrap = frame
+          .locator(`#${selId}`)
+          .locator('xpath=preceding-sibling::span[contains(@class,"k-dropdown-wrap")][1]');
+        if ((await wrap.count()) > 0) {
+          await wrap.first().click().catch(() => {});
+        } else {
+          await frame
+            .locator(`#${selId}`)
+            .locator('xpath=ancestor::span[contains(@class,"k-widget")][1]')
+            .click()
+            .catch(() => {});
+        }
+        await frame.waitForTimeout(600);
+        // Pick the first real account option (skip the "Seleccionar" placeholder).
+        const option = frame
+          .locator(`#${selId}_listbox li`)
+          .filter({ hasNotText: 'Seleccionar' })
+          .first();
+        if ((await option.count()) > 0) {
+          await option.click().catch(() => {});
+          this.log('Account selected.');
+        } else {
+          this.log('Account option not found in the dropdown list.');
+        }
+        await frame.waitForTimeout(600);
+      } else {
+        this.log('No account dropdown found; attempting to search directly.');
+      }
+    } catch (e) {
+      this.log(`Account selection failed (continuing to search): ${e}`);
+    }
+
+    // Trigger the search.
+    try {
+      const buscar = frame.locator('button:has-text("Buscar"), input[value="Buscar"]').first();
+      if ((await buscar.count()) > 0) {
+        this.log('Clicking "Buscar"...');
+        await buscar.click().catch(() => {});
+      } else {
+        this.log('"Buscar" button not found.');
+      }
+    } catch (e) {
+      this.log(`Search click failed: ${e}`);
+    }
+  }
+
+  /** Find the id of the <select> whose options look like accounts. */
+  private async findAccountSelectId(frame: Frame): Promise<string | null> {
+    for (const select of await frame.$$('select')) {
+      for (const option of await select.$$('option')) {
+        const t = ((await option.textContent()) || '').replace(/\s+/g, ' ').trim();
+        if (ACCOUNT_OPTION_RE.test(t)) {
+          return select.getAttribute('id');
+        }
+      }
     }
     return null;
   }
