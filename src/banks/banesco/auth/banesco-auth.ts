@@ -442,10 +442,12 @@ export class BanescoAuth extends BaseBankAuth<
       this.log('Waiting for next step to load...');
       await this.page?.waitForTimeout(3000);
 
-      // Loop to handle intermediate screens (active session warning, security questions)
-      const MAX_RETRIES = 5;
+      // Loop to handle intermediate screens (active session warning, security questions).
+      // The budget must cover a full re-login cycle in case the password submit lands on
+      // the post-password active-session warning (see the PASSWORD branch below).
+      const MAX_RETRIES = 12;
       let currentFrame = await this.getRefreshedFrame();
-      
+
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         if (!currentFrame) {
           throw new Error('Lost iframe during login flow');
@@ -458,6 +460,28 @@ export class BanescoAuth extends BaseBankAuth<
           // Found password field - proceed to enter password
           this.log('Step 3: Entering password...');
           await this.enterPasswordDirect(currentFrame);
+
+          // Do NOT assume the password submit finished the login. Banesco frequently
+          // answers the password postback with the "existe una conexión activa" warning
+          // (another session is open) instead of the dashboard — common because the
+          // caller never logs out, so a previous run's session lingers. Re-inspect the
+          // page: if it's the active-session warning or a bounce back to the login form,
+          // keep looping so the ACTIVE_SESSION_WARNING / LOGIN_FORM handlers dismiss it
+          // and re-authenticate. Only treat login as submitted once we're past those.
+          await this.page?.waitForTimeout(3000);
+          currentFrame = await this.getRefreshedFrame();
+          const postStep = currentFrame
+            ? await this.detectCurrentStep(currentFrame)
+            : BanescoAuth.LOGIN_STEP.UNKNOWN;
+          if (
+            postStep === BanescoAuth.LOGIN_STEP.ACTIVE_SESSION_WARNING ||
+            postStep === BanescoAuth.LOGIN_STEP.LOGIN_FORM ||
+            postStep === BanescoAuth.LOGIN_STEP.SECURITY_QUESTIONS
+          ) {
+            this.log(`Post-password screen is "${postStep}" (likely active-session); resolving before finishing...`);
+            continue;
+          }
+
           this.log('Login form submitted successfully');
           return true;
         }
@@ -567,12 +591,19 @@ export class BanescoAuth extends BaseBankAuth<
 
     // Human-like delay before submitting
     await this.humanDelay(500, 1000);
-    
-    // Try pressing Enter instead of clicking button (more natural behavior)
-    // This allows any JavaScript handlers on the form to process normally
-    this.log('Pressing Enter to submit...');
-    await passwordField.press('Enter');
-    this.log('Submit triggered via Enter');
+
+    // Submit via the Aceptar button so the ASP.NET postback carries the button's event
+    // target — the same mechanism the username and security-questions steps use. Pressing
+    // Enter submits the form without that postback, which on ContrasenaDNA.aspx can leave
+    // the flow stuck on the password page. Fall back to Enter if no submit button exists.
+    try {
+      await this.clickSubmitButton(frame);
+      this.log('Submit triggered via Aceptar click');
+    } catch (e) {
+      this.log(`Aceptar button not found (${e instanceof Error ? e.message : e}); falling back to Enter`);
+      await passwordField.press('Enter');
+      this.log('Submit triggered via Enter');
+    }
   }
   
   /**

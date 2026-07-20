@@ -130,16 +130,21 @@ export abstract class BaseBankAuth<
    * `Sec-Fetch-*` values) can override this to return `{}`.
    */
   protected getNavigationHeaders(): Record<string, string> {
+    // Deliberately NO Sec-Fetch-* here. These are context-level extraHTTPHeaders, so
+    // they are forced onto EVERY request — including the same-origin login form POST,
+    // which would then go out with `Sec-Fetch-Site: none` instead of `same-origin`.
+    // Banesco's WAF rejects that mismatch (WEBEG001 "no podemos procesar su
+    // transacción"), blocking login at the username step; it also defeats the per-POST
+    // fixup in getExtraRequestHeaders() (whose `if (!headers['sec-fetch-site'])` guard
+    // never fires once these are set). Let the browser compute the correct per-request
+    // Sec-Fetch-* values itself. A subclass that truly needs fixed values can add them
+    // via getExtraRequestHeaders() where the request method/URL are known.
     return {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
       'Accept-Language': 'es-VE,es-419;q=0.9,es;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
       'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
       'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
       'sec-ch-ua-mobile': '?0',
       'sec-ch-ua-platform': '"Windows"'
